@@ -1,0 +1,3 @@
+[submodule "Swin-Transformer-TF"]
+	path = Swin-Transformer-TF
+	url = https://github.com/JureHudoklin/Swin-Transformer-TF

@@ -1,0 +1,36 @@
+
+{
+    // "image": "tf-260:version_2",
+    // "name": "Tensroflow 2.6.0",
+    "image": "pytorch-171:COCO",
+    "name": "Pytorch 1.7.1",
+
+
+    // "runArgs": ["--runtime=nvidia", "--gpus" ,"all", "--privileged"], 
+
+    "runArgs": [
+		"--gpus=all",
+		"-e", "DISPLAY=${env:DISPLAY}",
+		"-v", "/tmp/.X11-unix:/tmp/.X11-unix",
+        "--net=host"
+	],
+
+    "extensions": [
+        "github.copilot",
+        "eamodio.gitlens",
+        "streetsidesoftware.code-spell-checker",
+        "ms-python.vscode-pylance",
+        "ms-python.python"
+    ],
+    "containerEnv": {
+        "TF_CPP_MIN_LOG_LEVEL": "3",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NVIDIA_VISIBLE_DEVICES": "0",
+        "EGL_DEVICE_ID"       : "0",
+        "DISPLAY"             : "unix:0"
+    },
+    "mounts": [
+            // "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
+            "source=/hdd/datasets,target=/hdd/datasets,type=bind"
+      ]
+}   
