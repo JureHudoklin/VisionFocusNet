@@ -26,34 +26,54 @@ import torch.nn as nn
 import torchvision
 from torchsummary import summary
 import matplotlib.pyplot as plt
-import tkinter as tk
+import numpy as np
 
-# coco = torchvision.datasets.CocoDetection(root='/hdd/datasets/COCO/images/train2017',
-#                                             annFile='/hdd/datasets/COCO/annotations/annotations_trainval2017/annotations/instances_train2017.json',
-#                                             transform=torchvision.transforms.ToTensor())
+from data_generator.coco import get_coco_data_generator
+from configs.detr_basic_config import Config
 
+if __name__ == "__main__":
+    args = Config()
+    train, val = get_coco_data_generator(args)
+    
+    samples, targets = next(iter(train))
+    print(targets)
+    exit()
+    
+    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-# image, label = coco[0]
-# print(label)
-# print(image.shape)     
+    # cfg = Config()
+    # vfn = build_vision_focusnet(cfg, device).to(device)
+    
+    # vfn(torch.randn(1, 3, 224, 224).to(device), torch.randn(1, 3, 64, 64).to(device))
+    # summary(vfn)
+    
+    
+    hm = HungarianMatcher()
 
-# # SHow the image
-# plt.imshow(image.permute(1, 2, 0))
-# # Render using PyQt5
-# plt.savefig("test.jpg")
-
-# print(torch.cuda.is_available())
-
-# layer = nn.Linear(3, 5)
-# tensor = torch.randn(3, 3, device="cuda")
-# out = layer(torch.randn(3, 3))
-# print(out)
-device = torch.device('cuda')
-
-vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16').to(device)
-test_tensor = torch.ones((10, 3, 384, 384), device=device)
-print(vits16.forward(test_tensor).shape)
-summary(vits16, (3, 32, 32))
-# for i in range(100):
-#     test_tensor = torch.ones((10, 3, 384, 384))
-#     print(vits16.forward(test_tensor))
+    
+    pred = torch.tensor([[[0, 0, 1, 1], [0, 0, 0.5, 0.5], [0.1, 0.1, 1, 1], [0.3, 0.3, 0.5, 0.5], [0.3, 0.3, 0.7, 0.7]],
+                         [[0, 0, 1, 1], [0, 0, 0.5, 0.5], [0.1, 0.1, 1, 1], [0.3, 0.3, 0.5, 0.5], [0.3, 0.3, 0.7, 0.7]]])
+    # a = np.array([[0, 0],[1, 0]])
+    # print(a)
+    # print(pred[a])
+    # exit()
+    # print(pred.shape)
+    gt = torch.tensor([[[0, 0, 0.1, 0.1], [0, 0, 0.2, 0.2], [0.5, 0.5, 1, 1], [0, 0, 0, 0]],
+                       [[0, 0, 0.1, 0.1], [0, 0, 0.2, 0.2], [0.5, 0.5, 1, 1], [0, 0, 0, 0]]])
+    lengths = [3, 4]
+    
+    out = {"bbox_pred": pred}
+    gt = {"bbox": gt, "lengths": lengths}
+    
+    indeces = hm(out, gt)
+    
+    # for b, rc in enumerate(indeces):
+    #     neki = (np.ones(rc.shape[-1])*b)[None, :]
+    #     wow = np.append(neki, rc, axis=0)
+    #     print(wow)
+    
+    #print((np.ones(4)*2)[None, :])
+    
+    indeces_for = [np.append((np.ones(rc.shape[-1])*b)[None, :], rc, axis=0).T for b, rc in enumerate(indeces)]
+    print(np.concatenate(indeces_for, axis=0))
+    print(indeces_for)

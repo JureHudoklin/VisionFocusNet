@@ -1,9 +1,0 @@
-PyYAML
-pyrender
-imageio
-numpy
-pathos
-opencv-python==4.2.0.32
-matplotlib
-python-fcl
-sklearn
