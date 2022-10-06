@@ -14,7 +14,6 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
                    ref_tgt, # [Q, C]
                    batch_size,
                    training, 
-                   num_classes, 
                    hidden_dim, 
                    label_enc):
     """
@@ -26,7 +25,7 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
     dn_args : {dict}
         - "NUM_DN_GROUPS", "LABEL_NOISE_SCALE", "BOX_NOISE_SCALE"
     ref_points_unsigmoid : [Q, 4]
-    ref_tgt : [Q, C]
+    ref_tgt : [Q, B, C]
     batch_size : int
     training : bool
     num_classes : int
@@ -49,27 +48,29 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
         'pad_size': int -- N*scalar
     """ 
     num_queries = ref_points_unsigmoid.shape[0]
-    indicator0 = torch.zeros([num_queries, 1]).cuda()
-    ref_tgt = torch.cat([ref_tgt, indicator0], dim=1) # [Q, C]
+    # Add 0 chanel to ref_tgt [Q, B, C] -> [Q, B, C+1]
+    indicator0 = torch.zeros(num_queries, batch_size, 1).to(ref_tgt.device)
+    ref_tgt = torch.cat([ref_tgt, indicator0], dim=-1)
+    ref_tgt = ref_tgt.permute(1, 0, 2) # [B, Q, C+1]
     
     if dn_args is not None:
-        scalar, label_noise_scale, box_noise_scale = dn_args["NUM_DN_GROUPS"], dn_args["LABEL_NOISE_SCALE"], dn_args["BOX_NOISE_SCALE"]
+        scalar, label_noise_scale, box_noise_scale, use_dn = dn_args["NUM_DN_GROUPS"], dn_args["LABEL_NOISE_SCALE"], dn_args["BOX_NOISE_SCALE"], dn_args["USE_DN"] 
   
-    if training and dn_args is not None:
-        known = [(torch.ones_like(t['labels'])).cuda() for t in targets] #[[L], ...]
+    if training and use_dn and dn_args is not None:
+        known = [(torch.ones_like(t['sim_label'])).cuda() for t in targets] #[[L], ...]
         know_idx = [torch.nonzero(t) for t in known] #[[L, 1], ...]
         known_num = [sum(k) for k in known] #[L, ...] # Number of known labels in each image of batch
 
-        labels = torch.cat([t['labels'] for t in targets]) # [N]
+        sim_label = torch.cat([t['sim_label'] for t in targets]) # [N]
         boxes = torch.cat([t['boxes'] for t in targets]) # [N, 4]
-        batch_idx = torch.cat([torch.full_like(t['labels'].long(), i) for i, t in enumerate(targets)])  # [N] (0,0,0,1,1,...)
+        batch_idx = torch.cat([torch.full_like(t['sim_label'].long(), i) for i, t in enumerate(targets)])  # [N] (0,0,0,1,1,...)
 
         known_indice = torch.nonzero(torch.cat(known)) # [N, 1]
         known_indice = known_indice.view(-1) # [N] (1,2,3,4, ... N)
 
         # Make groups
         known_indice = known_indice.repeat(scalar, 1).view(-1)
-        known_labels = labels.repeat(scalar, 1).view(-1)
+        known_labels = sim_label.repeat(scalar, 1).view(-1)
         known_bid = batch_idx.repeat(scalar, 1).view(-1)
         known_bboxs = boxes.repeat(scalar, 1)
         
@@ -80,8 +81,8 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
         if label_noise_scale > 0:
             p = torch.rand_like(known_labels_noised.float()) # [N*scalar]
             chosen_indice = torch.nonzero(p < (label_noise_scale)).view(-1)  # usually half of bbox noise
-            new_label = torch.randint_like(chosen_indice, 0, num_classes)  # randomly put a new one here
-            known_labels_noised.scatter_(0, chosen_indice, new_label)
+            new_label = torch.randint_like(chosen_indice, 0, 3)  # randomly put a new one here
+            known_labels_noised.scatter_(0, chosen_indice, new_label) #
         # noise on the box: noise both x,y and w,h of the box
         if box_noise_scale > 0:
             diff = torch.zeros_like(known_bbox_noised)
@@ -98,6 +99,8 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
         # add dn part indicator
         indicator1 = torch.ones([input_label_embed.shape[0], 1]).cuda() # [N*scalar, 1]
         input_label_embed = torch.cat([input_label_embed, indicator1], dim=1) # [N*scalar, C+1]
+        input_label_embed = input_label_embed +ref_tgt[(torch.zeros_like(known_bid), known_bid)] ##############################################################+ ref_tgt[0] 
+        input_label_embed[:, -1] = 1.0 # [N*scalar, C+1]
         input_bbox_embed = inverse_sigmoid(known_bbox_noised) # [N*scalar, 4]        
         
         # Create paddings
@@ -107,7 +110,8 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
         padding_bbox = torch.zeros(pad_size, 4).cuda()
         
         # Prepare the final outputs
-        input_query_label = torch.cat([padding_label, ref_tgt], dim=0).repeat(batch_size, 1, 1) # [B, N*scalar+Q, C+1]
+        padding_label = padding_label.repeat(batch_size, 1, 1) # [B, N*scalar, C]
+        input_query_label = torch.cat([padding_label, ref_tgt], dim=1) # [B, Q+N*scalar, C]
         input_query_bbox = torch.cat([padding_bbox, ref_points_unsigmoid], dim=0).repeat(batch_size, 1, 1) # [B, N*scalar+Q, 4]
 
         # Map the ground truths to the padded outputs
@@ -146,7 +150,7 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
             'pad_size': pad_size # N*scalar
         }
     else:  # no dn for inference
-        input_query_label = ref_tgt.repeat(batch_size, 1, 1)  # [B, Q, C+1]
+        input_query_label = ref_tgt
         input_query_bbox = ref_points_unsigmoid.repeat(batch_size, 1, 1) # [B, Q, 4]
         attn_mask = None
         mask_dict = None
@@ -158,7 +162,7 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
 
 
 
-def dn_post_process(outputs_class, outputs_coord, mask_dict):
+def dn_post_process(outputs_class, output_sim, outputs_coord, mask_dict):
     """
     post process of dn after output from the transformer
     put the dn part in the mask_dict
@@ -168,11 +172,13 @@ def dn_post_process(outputs_class, outputs_coord, mask_dict):
     """
     if mask_dict and mask_dict['pad_size'] > 0:
         output_known_class = outputs_class[:, :, :mask_dict['pad_size'], :]
+        output_known_sim = output_sim[:, :, :mask_dict['pad_size'], :]
         output_known_coord = outputs_coord[:, :, :mask_dict['pad_size'], :]
         outputs_class = outputs_class[:, :, mask_dict['pad_size']:, :]
+        output_sim = output_sim[:, :, mask_dict['pad_size']:, :]
         outputs_coord = outputs_coord[:, :, mask_dict['pad_size']:, :]
-        mask_dict['output_known_lbs_bboxes']=(output_known_class,output_known_coord)
-    return outputs_class, outputs_coord, mask_dict
+        mask_dict['output_known_lbs_bboxes']=(output_known_class, output_known_sim, output_known_coord)
+    return outputs_class, output_sim, outputs_coord, mask_dict
 
 
 def prepare_for_loss(mask_dict):
@@ -191,9 +197,10 @@ def prepare_for_loss(mask_dict):
     bid = batch_idx[known_indice]
     if len(output_known_class) > 0:
         output_known_class = output_known_class.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2)
+        output_known_sim = output_known_sim.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2)
         output_known_coord = output_known_coord.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2)
     num_tgt = known_indice.numel()
-    return known_labels, known_bboxs, output_known_class, output_known_coord, num_tgt
+    return known_labels, known_bboxs, output_known_class, output_known_sim, output_known_coord, num_tgt
 
 
 
@@ -257,9 +264,10 @@ def compute_dn_loss(mask_dict, training, aux_num, focal_alpha):
     """
     losses = {}
     if training and 'output_known_lbs_bboxes' in mask_dict:
-        known_labels, known_bboxs, output_known_class, output_known_coord, \
+        known_labels, known_bboxs, output_known_class, output_known_sim, output_known_coord, \
         num_tgt = prepare_for_loss(mask_dict)
         losses.update(tgt_loss_labels(output_known_class[-1], known_labels, num_tgt, focal_alpha))
+        losses.update(tgt_loss_sim(output_known_coord[-1], known_bboxs, num_tgt))
         losses.update(tgt_loss_boxes(output_known_coord[-1], known_bboxs, num_tgt))
     else:
         losses['tgt_loss_bbox'] = torch.as_tensor(0.).to('cuda')

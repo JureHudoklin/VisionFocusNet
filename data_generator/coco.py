@@ -10,6 +10,7 @@ import torchvision
 import random
 
 import data_generator.transforms as T
+import data_generator.sltransforms as ST
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 
@@ -27,36 +28,42 @@ class CocoLoader(torchvision.datasets.CocoDetection):
                  img_dir,
                  ann_file,
                  transforms = None,
+                 tgt_transforms = None,
                  output_normalize = True,
-                 return_masks = False,
                  ):
         super(CocoLoader, self).__init__(img_dir, ann_file)
         
         
         
         self._transforms = transforms
+        self._tgt_transforms = tgt_transforms
         self.output_normalize = output_normalize
-        self.prepare = ConvertCocoPolysToMask(return_masks)
-        self.num_of_classes = 90+1
+        self.prepare = CocoFormat()
         
         
     def __len__(self):
-        return 100
         return super(CocoLoader, self).__len__()
     
     def __getitem__(self, idx):
-        img, target = super(CocoLoader, self).__getitem__(idx)
-        image_id = self.ids[idx]
-        target = {'image_id': image_id, 'annotations': target}
-        img, target = self.prepare(img, target)
+        tgt_img = None
+        while tgt_img is None:
+            img, target = super(CocoLoader, self).__getitem__(idx)
+            image_id = self.ids[idx]
+            target = {'image_id': image_id, 'annotations': target}
+            img, tgt_img, target = self.prepare(img, target)
+            idx = random.randint(0, len(self)-1)
+        
         if self._transforms is not None:
             img, target = self._transforms(img, target)
-        return img, target
+        if self._tgt_transforms is not None:
+            tgt_img, _ = self._tgt_transforms(tgt_img, None)
+        return img, tgt_img, target
             
 
     def collate_fn(self, batch):
         batch = list(zip(*batch))
         batch[0] = nested_tensor_from_tensor_list(batch[0])
+        batch[1] = nested_tensor_from_tensor_list(batch[1])
         return tuple(batch)
 
     def show(self, img, target):
@@ -93,19 +100,20 @@ def display_data(data):
     Parameters
     ----------
     data : tuple
-        Tuple of (imgs, bboxs, lbls)
     """
     
-    samples, targets = data
+    samples, samples_tgt, targets = data
     imgs, masks = samples.decompose()
+    imgs_tgt, _ = samples_tgt.decompose()
+    
     B = imgs.shape[0]
     denormalize = T.DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
     # Create Subplots
-    fig, axs = plt.subplots(B, 1, figsize=(3, 2*B))
+    fig, axs = plt.subplots(B, 2, figsize=(5, 2*B))
     
     for B_i in range(B):
-        ax = axs[B_i]
+        ax = axs[B_i, 0]
         
         # Plot the image
         img = denormalize(imgs[B_i])
@@ -127,6 +135,11 @@ def display_data(data):
             
             ax.add_patch(plt.Rectangle((x, y), w, h, fill=False, edgecolor='red', linewidth=1, alpha=0.5))
             ax.text(x, y, f"ID:{obj_id}", color='red', fontsize=5)
+            
+        ax = axs[B_i, 1]
+        # Plot the image
+        img = denormalize(imgs_tgt[B_i])
+        ax.imshow(img.permute(1, 2, 0))
     
     plt.savefig('test1.png', dpi=500)
 
@@ -139,7 +152,7 @@ def build_dataset(image_set, args):
         "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/instances_val2017.json")),
     }
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoLoader(img_folder, ann_file, transforms=make_coco_transforms(image_set))
+    dataset = CocoLoader(img_folder, ann_file, transforms=make_coco_transforms(image_set), tgt_transforms = make_tgtimg_transforms())
     return dataset
 
 def get_coco_data_generator(args):
@@ -193,31 +206,18 @@ def get_coco_api_from_dataset(dataset):
         return dataset.coco
 
 
-def convert_coco_poly_to_mask(segmentations, height, width):
-    masks = []
-    for polygons in segmentations:
-        rles = coco_mask.frPyObjects(polygons, height, width)
-        mask = coco_mask.decode(rles)
-        if len(mask.shape) < 3:
-            mask = mask[..., None]
-        mask = torch.as_tensor(mask, dtype=torch.uint8)
-        mask = mask.any(dim=2)
-        masks.append(mask)
-    if masks:
-        masks = torch.stack(masks, dim=0)
-    else:
-        masks = torch.zeros((0, height, width), dtype=torch.uint8)
-    return masks
-
-class ConvertCocoPolysToMask(object):
-    def __init__(self, return_masks=False):
-        self.return_masks = return_masks
-
-    def __call__(self, image, target):
+class CocoFormat(object):
+    def __init__(self):
+        same_classes = {47:"banana", 48:"apple", 50:"orange", 51:"broccoli", 52:"carrot"}
+        simmilar_classes = {} #TO do
+        pass
+    
+    def prepare_base_labels(self, image, target):
         w, h = image.size
 
         image_id = target["image_id"]
         image_id = torch.tensor([image_id])
+
 
         anno = target["annotations"]
 
@@ -225,43 +225,25 @@ class ConvertCocoPolysToMask(object):
 
         boxes = [obj["bbox"] for obj in anno]
         # guard against no boxes via resizing
-        boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
-        boxes[:, 2:] += boxes[:, :2]
+        boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4) # [x, y, w, h]
+        boxes[:, 2:] += boxes[:, :2] # [x1, y1, x2, y2]
         boxes[:, 0::2].clamp_(min=0, max=w)
         boxes[:, 1::2].clamp_(min=0, max=h)
 
         classes = [obj["category_id"] for obj in anno]
         classes = torch.tensor(classes, dtype=torch.int64)
 
-        if self.return_masks:
-            segmentations = [obj["segmentation"] for obj in anno]
-            masks = convert_coco_poly_to_mask(segmentations, h, w)
-
-        keypoints = None
-        if anno and "keypoints" in anno[0]:
-            keypoints = [obj["keypoints"] for obj in anno]
-            keypoints = torch.as_tensor(keypoints, dtype=torch.float32)
-            num_keypoints = keypoints.shape[0]
-            if num_keypoints:
-                keypoints = keypoints.view(num_keypoints, -1, 3)
-
+        # keep only valid bounding boxes
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
         boxes = boxes[keep]
         classes = classes[keep]
-        if self.return_masks:
-            masks = masks[keep]
-        if keypoints is not None:
-            keypoints = keypoints[keep]
+       
+            
 
         target = {}
         target["boxes"] = boxes
         target["labels"] = classes
-        if self.return_masks:
-            target["masks"] = masks
-        target["image_id"] = image_id
-        if keypoints is not None:
-            target["keypoints"] = keypoints
-
+    
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
         iscrowd = torch.tensor([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno])
@@ -270,8 +252,48 @@ class ConvertCocoPolysToMask(object):
 
         target["orig_size"] = torch.as_tensor([int(h), int(w)])
         target["size"] = torch.as_tensor([int(h), int(w)])
+        target["image_id"] = image_id
 
         return image, target
+
+    def prepare_target_img(self, image, target):
+        labels = target["labels"]
+
+        selected_idx = random.sample(range(labels.shape[0]), k=1)
+        selected_idx = torch.tensor(selected_idx, dtype=torch.int64)
+        selected_class = labels[selected_idx]
+        same_class_idx = torch.where(labels == selected_class)[0] #
+
+        
+        # Get all labels of the same class
+        new_target = {}
+        new_target["boxes"] = target["boxes"][same_class_idx]
+        new_target["labels"] = target["labels"][same_class_idx]
+        new_target["labels"] = torch.ones_like(new_target["labels"])
+        new_target["area"] = target["area"][same_class_idx]
+        new_target["iscrowd"] = target["iscrowd"][same_class_idx]
+        new_target["orig_size"] = target["orig_size"]
+        new_target["size"] = target["size"]
+        
+        # Set similarity indices:
+        similarity_idx = torch.zeros_like(labels)
+        similarity_idx[selected_idx] = 1
+        new_target["sim_label"] = similarity_idx[same_class_idx]
+
+
+        tgt_box = target["boxes"][selected_idx]
+        tgt_image = image.crop(tgt_box[0].tolist())
+        
+        return image, tgt_image, new_target
+       
+    
+
+    def __call__(self, image, target):
+        image, target = self.prepare_base_labels(image, target)
+        if len(target["labels"]) == 0:
+            return image, None, target
+        image, tgt_image, target = self.prepare_target_img(image, target)
+        return image, tgt_image, target
 
 def make_coco_transforms(image_set):
 
@@ -293,21 +315,36 @@ def make_coco_transforms(image_set):
                     T.RandomResize(scales, max_size=1333),
                 ])
             ),
-            #T.RejectSmall(600),
-            #T.RejectCrowded(),
             normalize,
         ])
 
     if image_set == 'val':
         return T.Compose([
-            #T.RandomResize([800], max_size=1333),
             normalize,
         ])
 
     raise ValueError(f'unknown {image_set}')
 
+def make_tgtimg_transforms():
+    normalize = T.Compose([
+        T.ToTensor(),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    return T.Compose([
+        T.Resize((224,224)),
+        T.RandomSelect(
+            T.RandomRotate(),
+            T.RandomHorizontalFlip(),
+            ),
 
-
+        ST.RandomSelectMulti([
+            ST.AdjustBrightness(2),
+            ST.AdjustContrast(2),
+            #ST.LightingNoise(),
+            T.RandomHorizontalFlip(),
+        ]),
+        normalize,
+    ])
 
 
 if __name__ == "__main__":

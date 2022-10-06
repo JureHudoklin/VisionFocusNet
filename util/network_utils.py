@@ -35,7 +35,6 @@ def load_model(model, optimizer, load_dir, device, epoch=None):
 def display_model_outputs(outputs, samples, targets):
     bs = len(targets)
     denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
     
     fig, ax = plt.subplots(bs, 1, figsize=(3, 2*bs))
     for b in range(bs):
@@ -59,15 +58,16 @@ def display_model_outputs(outputs, samples, targets):
             obj_id = targets[b]["labels"][i].item()
             ax[b].text(x, y, f"ID:{obj_id}", color="red", fontsize=3)
         
-        for i in range(outputs["pred_logits"][b].shape[0]):
-            if sum(torch.where(outputs["pred_logits"].sigmoid()[b][i] > 0.5, 1, 0)) == 0:
+        class_logits = outputs["pred_class_logits"][b].softmax(-1)
+        for i in range(class_logits.shape[0]):
+            obj_id = class_logits[i].argmax().item()
+            if obj_id == 0:
                 continue
+        
             cx, cy, w, h = outputs["pred_boxes"][b, i, :].cpu().detach().numpy()
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            obj_id = torch.argmax(outputs["pred_logits"][b, i, :]).item()
             ax[b].add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="blue", linewidth=1))
             ax[b].text(x, y, f"ID:{obj_id}", color="blue", fontsize=3)
-
             
         plt.savefig("outputs.png", dpi=300)
     plt.close()

@@ -17,11 +17,12 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
     batch = 1
     start_time = time.time()
     
-    for samples, targets in data_loader:
+    for samples, tgt_imgs, targets in data_loader:
         samples = samples.to(device)
+        tgt_imgs = tgt_imgs.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples, targets)
+        outputs = model(samples, tgt_imgs, targets)
         
         loss_dict, stats_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
@@ -32,6 +33,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
         losses = loss_matching + loss_dn
        
         optimizer.zero_grad()
+        #with torch.autograd.set_detect_anomaly(True):
         losses.backward()
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
@@ -48,7 +50,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
             stats_tracker.save_info(os.path.join(log_dir, "info_train.txt"), epoch, batch)
 
         # print statistics
-        if batch % 10 == 0:
+        if batch % 1 == 0:
             ETA = (time.time() - start_time) / batch * (len(data_loader) - batch)
             ETA = time.strftime("%H:%M:%S", time.gmtime(ETA))        
             description = f"E: [{epoch}], [{batch}/{len(data_loader)}] ETA: {ETA} \n {str(stats_tracker)} \n "

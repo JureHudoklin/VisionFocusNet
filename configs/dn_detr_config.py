@@ -50,8 +50,15 @@ class Config():
     QUERY_SCALE_TYPE = 'cond_elewise' # 'cond_scalar'
     MODULATE_HW_ATTN = True
     
-    # DN-DETR
+    ####################
+    # Template Encoder #
+    ####################
+    TEMPLATE_ENCODER = {
+        "LR" : 0,
+        "PRETRAINED" : True,
+    }
     
+    # DN-DETR
     DN_ARGS = {
         "USE_DN" : True,
         "USE_DN_AUX" : True,

@@ -19,6 +19,7 @@ from scipy.optimize import linear_sum_assignment
 from torch import nn
 # import giou
 from torchvision.ops import generalized_box_iou
+#from torchvision.ops import sigmoid_focal_loss
 
 from util.box_ops import box_cxcywh_to_xyxy
 
@@ -51,7 +52,8 @@ class HungarianMatcher(nn.Module):
         Params:
         --------
             - outputs : dict
-                 "pred_logits": Tensor of dim [B, Q, num_classes]
+                 "pred_class_logits": Tensor of dim [B, Q, 2] 
+                 "pred_sim_logits": Tensor of dim [B, Q, 1]
                  "pred_boxes": Tensor of dim [B, Q, 4]
             - targets : list[dict, ...] -- len(targets) == B
                  "labels": Tensor of dim [num_target_boxes] 
@@ -65,10 +67,10 @@ class HungarianMatcher(nn.Module):
             For each batch element, it holds:
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
-        bs, num_queries = outputs["pred_logits"].shape[:2]
+        bs, num_queries = outputs["pred_class_logits"].shape[:2]
 
         # We flatten to compute the cost matrices in a batch
-        out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [bs * q, num_classes]
+        out_prob = outputs["pred_class_logits"].flatten(0, 1).softmax(-1)  # [bs * q, 2]
         out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [bs * q, 4]
 
         # Also concat the target labels and boxes
@@ -78,9 +80,10 @@ class HungarianMatcher(nn.Module):
         # Compute the classification cost.
         alpha = self.focal_alpha
         gamma = 2.0
-        neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
-        pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
-        cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
+        
+        neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log()) # [bs * q, 2]
+        pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log()) # [bs * q, 2]
+        cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids] # [bs * q, num_target_boxes]
 
         # Compute the L1 cost between boxes
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1) # [bs * q, num_target_boxes]

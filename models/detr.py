@@ -3,6 +3,7 @@
 DETR model and criterion classes.
 """
 import math
+from re import T, template
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -17,8 +18,9 @@ from util.dn_utils import prepare_for_dn, dn_post_process, compute_dn_loss
 
 from .backbone import build_backbone
 from .transformer import build_transformer
+from .template_encoder import build_template_encoder
 from .layer_util import MLP, inverse_sigmoid
-from loses.sigmoid_focal_loss import sigmoid_focal_loss
+from loses.sigmoid_focal_loss import sigmoid_focal_loss, binary_focal_loss, simple_focal_loss, focal_loss, FocalLoss
 
 from loses.hungarian_matcher import build_matcher
 
@@ -26,7 +28,10 @@ from loses.hungarian_matcher import build_matcher
 
 class DETR(nn.Module):
     """ DETR modefule for object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss, dn_args: dict = None):
+    def __init__(self, backbone,
+                 transformer,
+                 template_encoder,
+                 num_classes, num_queries, aux_loss, dn_args: dict = None):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -40,13 +45,14 @@ class DETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         self.hidden_dim = transformer.d_model
-        self.class_embed = nn.Linear(self.hidden_dim, num_classes)
+        self.class_embed = nn.Linear(self.hidden_dim, 2)
+        self.sim_embed = nn.Linear(self.hidden_dim, 1)
         
         #self.bbox_embed = MLP(self.hidden_dim, self.hidden_dim, 4, 3)
         self.refpoint_embed = nn.Embedding(num_queries, 4)
         
         # Input: +1 for unknown class label, Output: -1 to leave space for denoising indicator
-        self.label_enc = nn.Embedding(num_classes + 1, self.hidden_dim - 1)
+        self.label_enc = nn.Embedding(3, self.hidden_dim - 1)
         self.num_classes = num_classes
         
         
@@ -54,24 +60,38 @@ class DETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss 
         
+        self.template_encoder = template_encoder
+        self.template_proj = nn.Linear(template_encoder.out_channels, self.hidden_dim-1)
+
+        
         # init prior_prob setting for focal loss
-        prior_prob = 0.01
+        #prior_prob = 0.01
+        prior_prob = 0.2
         bias_value = -math.log((1 - prior_prob) / prior_prob)
-        self.class_embed.bias.data = torch.ones(num_classes) * bias_value
+        #self.class_embed.bias.data.shape # (2,)
+        # Number of [0, 1] lables is very small
+        
+        self.class_embed.bias.data = torch.tensor([-0.1, -4])
+        self.sim_embed.bias.data = torch.tensor([prior_prob])
+        #torch.ones(num_classes) * bias_value
         
         if dn_args is not None:
             self.dn_args = dn_args
             
      
 
-    def forward(self, samples: NestedTensor, targets = None):
+    def forward(self, samples: NestedTensor, samples_targets: NestedTensor, targets = None):
         """ Forward pass for detr object detection model.
         
         Arguments:
         ----------
-        Samples: NestedTensor
+        samples: NestedTensor
             - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
             - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+        samples_targets: NestedTensor
+            - samples_targets.tensor: batched images, of shape [batch_size x 3 x H x W]
+            - samples.mask: NOT YET IMPLEMENTED. a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+        targets: list of dict
             
         Returns:
         --------
@@ -99,12 +119,20 @@ class DETR(nn.Module):
         src, mask = features[-1].decompose()
         assert mask is not None
         
+        #####################
+        # Template Encoding #
+        #####################
+        obj_enc = self.template_encoder(samples_targets)
+        obj_enc = obj_enc.decompose()[0] # [BS, C]
+        obj_enc = self.template_proj(obj_enc) + self.label_enc(torch.tensor(2).cuda()) # [BS, C]
+        ref_tgt = obj_enc.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
+        ref_tgt = ref_tgt.permute(1, 0, 2) # [NQ, BS, C]
+        
         ###############
         # Transformer #
         ###############
         bs = src.shape[0]
         ref_points_unsigmoid = self.refpoint_embed.weight # [num_queries, 4]
-        ref_tgt = self.label_enc(torch.tensor(self.num_classes).cuda()).repeat(self.num_queries, 1) # [num_queries, hidden_dim]
         # prepare for DN
         input_query_label, input_query_bbox, attn_mask, mask_dict = \
             prepare_for_dn(targets,
@@ -113,11 +141,9 @@ class DETR(nn.Module):
                            ref_tgt,
                            bs,
                            self.training,
-                           self.num_classes,
                            self.hidden_dim,
                            self.label_enc,
             )
-
 
         hs, reference_pts_layers = self.transformer(src = self.input_proj(src),
                                                     src_pos_embed = pos,
@@ -127,30 +153,30 @@ class DETR(nn.Module):
                                                     tgt_attn_mask = attn_mask
                                                     ) # hs: [num_layers, bs, num_queries, hidden_dim], reference_pts_layers: [num_layers, bs, num_queries, 4]
 
- 
         ###########
         # Outputs #
         ###########
         outputs_class = self.class_embed(hs) # [num_layers, bs, num_queries, num_classes]
+        output_sim = self.sim_embed(hs) # [num_layers, bs, num_queries, 1]
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
         
         # DB post processing
-        outputs_class, outputs_coord, mask_dict = dn_post_process(outputs_class, outputs_coord, mask_dict)
+        outputs_class, output_sim, outputs_coord, mask_dict = dn_post_process(outputs_class, output_sim, outputs_coord, mask_dict)
 
         
-        out = {"pred_logits": outputs_class[-1], "pred_boxes": outputs_coord[-1], "mask_dict": mask_dict}
+        out = {"pred_class_logits": outputs_class[-1], "pred_sim_logits": output_sim[-1], "pred_boxes": outputs_coord[-1], "mask_dict": mask_dict}
         
         if self.aux_loss:
-            out["aux_outputs"] = self._set_aux_loss(outputs_class, outputs_coord)
+            out["aux_outputs"] = self._set_aux_loss(outputs_class, output_sim, outputs_coord)
         return out
 
     @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord):
+    def _set_aux_loss(self, outputs_class, output_sim, outputs_coord):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn"t support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{"pred_logits": a, "pred_boxes": b}
-                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+        return [{"pred_class_logits": a, "pred_sim_logits": b, "pred_boxes": c}
+                for a, b, c  in zip(outputs_class[:-1], output_sim[:-1], outputs_coord[:-1])]
 
 
 
@@ -178,11 +204,58 @@ class SetCriterion(nn.Module):
         self.focal_alpha = focal_alpha
         self.losses = losses
         self.stats = {}
+        if "labels" in losses:
+            self.class_loss = FocalLoss(alpha=0.25, reduction="none") #self.focal_alpha
+        if "similarity" in losses:
+            self.sim_loss = FocalLoss(alpha=0.25, reduction="none") #self.focal_alpha
         
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """
         Classification loss (NLL)
+        
+        Arguments:
+        ----------
+        outputs : dict
+            - "pred_class_logits" : Tensor [bs, q , 2]
+        targets : list[dict]
+            - "labels" : Tensor [bs, q]
+        indices : list of tuples -- len(indices) = bs
+            - [(out_idx, tgt_idx), ...]
+        """
+        
+        assert "pred_class_logits" in outputs
+        
+        outputs_logits = outputs["pred_class_logits"] # [bs, q, 2]
+        bs, q, _ = outputs_logits.shape
+
+        idx = self._get_src_permutation_idx(indices) # [q*bs, b_idx], [q*bs, src_idx]
+        target_classes_o = torch.cat([t["labels"][tgt_idx] for t, (_, tgt_idx) in zip(targets, indices)]) # [bs*q]
+        target_classes = torch.full(outputs_logits.shape[:2], 0,
+                                    dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
+        target_classes[idx] = target_classes_o # [bs, q]
+        
+
+        loss_ce = self.class_loss(outputs_logits, target_classes) # scalar
+        loss_ce = loss_ce.view(bs, q, -1) # [bs, q, 2]
+        loss_ce = (loss_ce.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
+        
+
+        losses = {"loss_ce": loss_ce}
+        stats = {}
+        if log:
+            stats = {"loss_ce": loss_ce}
+            predicted_bg = (outputs_logits.argmax(-1) == 0).sum()
+            predicted_obj = (outputs_logits.argmax(-1) == 1).sum()
+            acc = accuracy(outputs_logits[idx], target_classes_o)[0]
+            stats = {"class_acc": acc}
+            stats.update({"predicted_bg": predicted_bg, "predicted_obj": predicted_obj})
+            stats.update(losses)
+        return losses, stats
+    
+    def loss_similarity(self, outputs, targets, indices, num_boxes, log=True):
+        """
+        Similarity loss (NLL)
         
         Arguments:
         ----------
@@ -194,31 +267,27 @@ class SetCriterion(nn.Module):
             - [(out_idx, tgt_idx), ...]
         """
         
-        assert "pred_logits" in outputs
+        assert "pred_sim_logits" in outputs
         
-        outputs_logits = outputs["pred_logits"] # [bs, q, num_classes]
-
+        outputs_logits = outputs["pred_sim_logits"]
+        bs, q, _ = outputs_logits.shape
         idx = self._get_src_permutation_idx(indices) # [q*bs, b_idx], [q*bs, src_idx]
-        target_classes_o = torch.cat([t["labels"][tgt_idx] for t, (_, tgt_idx) in zip(targets, indices)]) # [bs*q]
-        target_classes = torch.full(outputs_logits.shape[:2], self.num_classes,
+        target_classes_o = torch.cat([t["sim_label"][tgt_idx] for t, (_, tgt_idx) in zip(targets, indices)]) # [bs*q]
+        target_classes = torch.full(outputs_logits.shape[:2], 0,
                                     dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
         target_classes[idx] = target_classes_o # [bs, q]
         
-        target_classes_onehot = torch.zeros([outputs_logits.shape[0], outputs_logits.shape[1], outputs_logits.shape[2]+1],
-                                            dtype=outputs_logits.dtype, layout=outputs_logits.layout, device=outputs_logits.device)
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
-
-        target_classes_onehot = target_classes_onehot[:,:,:-1] # [bs, q, num_classes]
-        loss_ce = sigmoid_focal_loss(outputs_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * outputs_logits.shape[1]
-
-        losses = {"loss_ce": loss_ce}
-        stats = {}
-        if log:
-            stats = {"loss_ce": loss_ce}
-            acc = accuracy(outputs_logits[idx], target_classes_o)[0]
-            stats = {"class_acc": acc}
-            stats.update(losses)
+        loss_sim = self.sim_loss(outputs_logits[idx], target_classes_o) # scalar
+        loss_sim = loss_sim.mean()
+        # loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
+        # loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
+        # loss_sim = (loss_sim / num_boxes)* outputs_logits.shape[1]
+        #loss_sim = simple_focal_loss(outputs_logits, target_classes, num_boxes, alpha=self.focal_alpha)
+        losses = {"loss_sim": loss_sim}
+        stats = {"loss_sim": loss_sim}
+        
         return losses, stats
+
 
     @torch.no_grad()
     def loss_cardinality(self, outputs, targets, indices, num_boxes, log=True):
@@ -226,7 +295,7 @@ class SetCriterion(nn.Module):
         For each image we calculate how many objects were predicted compared to target.
         Just for logging purposes.
         """
-        pred_logits = outputs["pred_logits"] # [bs, q, num_classes + 1]
+        pred_logits = outputs["pred_class_logits"] # [bs, q, num_classes + 1]
         device = pred_logits.device
         tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device) # [bs]
         # Count the number of predictions that are NOT "no-object" (which is the last class)
@@ -295,6 +364,7 @@ class SetCriterion(nn.Module):
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
             "labels": self.loss_labels,
+            "similarity": self.loss_similarity,
             "cardinality": self.loss_cardinality,
             "boxes": self.loss_boxes,
         }
@@ -345,10 +415,10 @@ class SetCriterion(nn.Module):
         ###############
         ### DN LOSS ###
         ###############
-        mask_dict = outputs["mask_dict"]
-        aux_num = len(outputs["aux_outputs"])
-        dn_losses = compute_dn_loss(mask_dict, self.training, aux_num, self.focal_alpha)
-        losses.update(dn_losses)
+        # mask_dict = outputs["mask_dict"]
+        # aux_num = len(outputs["aux_outputs"])
+        # dn_losses = compute_dn_loss(mask_dict, self.training, aux_num, self.focal_alpha)
+        # losses.update(dn_losses)
         
         return losses, stats
         
@@ -400,16 +470,19 @@ class PostProcessor(nn.Module):
 def build_model(args, device):
     
     # Create the model
-    num_classes = 91 # COCO dataset
+    num_classes = 2 # COCO dataset
 
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)
+    
+    template_encoder = build_template_encoder(args)
 
     model = DETR(
         backbone,
         transformer,
-        num_classes=num_classes,
+        template_encoder,
+        num_classes=2,
         num_queries=args.NUM_QUERIES,
         aux_loss=args.AUX_LOSS,
         dn_args=args.DN_ARGS,
@@ -417,7 +490,7 @@ def build_model(args, device):
 
     # Regular Loss Weights
     matcher = build_matcher(args)
-    weight_dict = {"loss_ce": args.CLASS_LOSS_COEF, "loss_bbox": args.BBOX_LOSS_COEF, "loss_giou" : args.GIOU_LOSS_COEF}
+    weight_dict = {"loss_ce": args.CLASS_LOSS_COEF, "loss_sim" : args.SIM_LOSS_COEF, "loss_bbox": args.BBOX_LOSS_COEF, "loss_giou" : args.GIOU_LOSS_COEF}
     
     if args.AUX_LOSS:
         aux_weight_dict = {}
@@ -430,9 +503,10 @@ def build_model(args, device):
     dn_weight_dict = {}
     print(args.DN_ARGS)
     if args.DN_ARGS["USE_DN"]:
-        dn_weight_dict['tgt_loss_ce'] = args.CLASS_LOSS_COEF
-        dn_weight_dict['tgt_loss_bbox'] = args.BBOX_LOSS_COEF
-        dn_weight_dict['tgt_loss_giou'] = args.GIOU_LOSS_COEF
+        dn_weight_dict["tgt_loss_ce"] = args.CLASS_LOSS_COEF
+        dn_weight_dict["tgt_loss_sim"] = args.SIM_LOSS_COEF
+        dn_weight_dict["tgt_loss_bbox"] = args.BBOX_LOSS_COEF
+        dn_weight_dict["tgt_loss_giou"] = args.GIOU_LOSS_COEF
         
     if args.DN_ARGS["USE_DN"] and args.DN_ARGS["USE_DN_AUX"]:
         aux_weight_dict = {}
@@ -441,7 +515,7 @@ def build_model(args, device):
         dn_weight_dict.update(aux_weight_dict)
 
 
-    losses = ["labels", "boxes", "cardinality"]
+    losses = ["labels", "similarity", "boxes", "cardinality"] #"similarity",
     
     criterion = SetCriterion(num_classes, 
                              matcher=matcher, 

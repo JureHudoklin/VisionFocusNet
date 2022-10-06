@@ -31,7 +31,9 @@ class ValueStats():
     @property
     def global_avg(self):
         avg =self.total / self.count
-        return avg.item()
+        if isinstance(avg, torch.Tensor):
+            return avg.item()
+        return avg
 
     @property
     def max(self):
@@ -93,9 +95,10 @@ def accuracy(output, target, topk=(1,)):
     
     Parameters
     ----------
-    output : torch.Tensor [bs* q, num_classes + 1]
+    output : torch.Tensor [bs* q, 2]
     target : torch.Tensor [bs* q]
     """
+    assert isinstance(output, torch.Tensor)
     if target.numel() == 0: # Check how many elements in the tensor
         return [torch.zeros([], device=output.device)]
     

@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from engine import train_one_epoch, evaluate
 from util.network_utils import load_model, save_model, write_summary
-from configs.dn_detr_config import Config
+from configs.vision_focusnet_config import Config
 from models.detr import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
 
@@ -33,7 +33,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "debug"
+        date = "debug_2"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -112,10 +112,10 @@ def main(args):
         print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
         
         ################ Eval ###############
-        stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loader, base_ds, device, epoch, log_save_dir)
-        write_summary(writer, stats[0], epoch, "val_loss")
-        write_summary(writer, stats[1], epoch, "val_stats")
-        write_summary(writer, coco_stats, epoch, "val")
+        # stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loader, base_ds, device, epoch, log_save_dir)
+        # write_summary(writer, stats[0], epoch, "val_loss")
+        # write_summary(writer, stats[1], epoch, "val_stats")
+        # write_summary(writer, coco_stats, epoch, "val")
         
         
 if __name__ == "__main__":
