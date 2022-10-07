@@ -15,48 +15,72 @@ from torchvision.ops.misc import interpolate
 from util.box_ops import box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
 
 
-def crop(image, target, region):
-    cropped_image = F.crop(image, *region)
+def crop(image, target, region, keep_boxes = True):
     if target is None:
+        cropped_image = F.crop(image, *region)
         return cropped_image, None
     else:
         target = target.copy()
-        i, j, h, w = region
 
-        # should we do something wrt the original size?
-        target["size"] = torch.tensor([h, w])
+        y, x, h, w= region # L, Up, R, Down
 
-        fields = ["labels", "area", "iscrowd"]
+        fields = ["labels", "area", "boxes", "sim_labels"]
+        orig_w, orig_h = image.size
 
         if "boxes" in target:
             boxes = target["boxes"]
+            if keep_boxes:
+                # Dont crop out any boxes
+                min_x = torch.min(boxes[:, 0]).item()
+                max_x = torch.max(boxes[:, 2]).item()
+                min_y = torch.min(boxes[:, 1]).item()
+                max_y = torch.max(boxes[:, 3]).item()
+                                
+                if x > min_x:
+                    x = int(min_x)
+                if y > min_y:
+                    y = int(min_y)
+                if x+w < max_x:
+                    w = int(max_x - x)
+                if y+h < max_y:
+                    h = int(max_y - y)
+                
+                rx = random.randint(0, x) if x > 0 else 0
+                x = x-rx
+                w = w+rx
+                w = w + random.randint(0, orig_w - (x+w)) if x+w < orig_w else w
+                ry = random.randint(0, y) if y > 0 else 0
+                y = y-ry
+                h = h+ry
+                h = h + random.randint(0, orig_h - (y+h)) if y+h < orig_h else h
+            
+            cropped_image = F.crop(image, y, x, h, w)
+            target["size"] = torch.tensor([h, w])
+
+            
             max_size = torch.as_tensor([w, h], dtype=torch.float32)
-            cropped_boxes = boxes - torch.as_tensor([j, i, j, i])
-            cropped_boxes = torch.min(cropped_boxes.reshape(-1, 2, 2), max_size)
+            cropped_boxes = boxes - torch.as_tensor([x, y, x, y])
             cropped_boxes = cropped_boxes.clamp(min=0)
-            area = (cropped_boxes[:, 1, :] - cropped_boxes[:, 0, :]).prod(dim=1)
+            cropped_boxes[:, 0::2].clamp_(max=max_size[0])
+            cropped_boxes[:, 1::2].clamp_(max=max_size[1])
+            area = (cropped_boxes[:, 3] - cropped_boxes[:, 1]) * (cropped_boxes[:, 2] - cropped_boxes[:, 0])
             target["boxes"] = cropped_boxes.reshape(-1, 4)
             target["area"] = area
             fields.append("boxes")
 
-        if "masks" in target:
-            # FIXME should we update the area here if there are no boxes?
-            target['masks'] = target['masks'][:, i:i + h, j:j + w]
-            fields.append("masks")
-
+       
         # remove elements for which the boxes or masks that have zero area
-        if "boxes" in target or "masks" in target:
+        if "boxes" in target:
             # favor boxes selection when defining which elements to keep
             # this is compatible with previous implementation
             if "boxes" in target:
                 cropped_boxes = target['boxes'].reshape(-1, 2, 2)
                 keep = torch.all(cropped_boxes[:, 1, :] > cropped_boxes[:, 0, :], dim=1)
-            else:
-                keep = target['masks'].flatten(1).any(1)
 
-            for field in fields:
-                target[field] = target[field][keep]
-
+            for k, v in target.items():
+                if k in fields:
+                    target[k] = v[keep]
+                
         return cropped_image, target
 
 
@@ -149,6 +173,24 @@ def pad(image, target, padding):
     if "masks" in target:
         target['masks'] = torch.nn.functional.pad(target['masks'], (0, padding[0], 0, padding[1]))
     return padded_image, target
+
+def rotate_90(image, target):
+    rotated_image = image.transpose(PIL.Image.ROTATE_90)
+    if target is None:
+        return rotated_image, None
+    else:
+        w, h = image.size
+
+        target = target.copy()
+        if "boxes" in target:
+            boxes = target["boxes"]
+            boxes = boxes[:, [1, 0, 3, 2]] * torch.as_tensor([1, -1, 1, -1]) + torch.as_tensor([0, h, 0, h])
+            target["boxes"] = boxes
+
+        if "masks" in target:
+            target['masks'] = target['masks'].flip(-2)
+
+        return rotated_image, target
 
 def rotate(image, target, angle):
     '''
@@ -330,6 +372,9 @@ class Resize(object):
         self.max_size = max_size
 
     def __call__(self, img, target=None):
+        h, w = img.size
+        if h < w:
+            img, target = rotate_90(img, target)
         return resize(img, target, self.size, self.max_size)
 
 class RandomPad(object):
@@ -452,7 +497,11 @@ class DeNormalize(object):
         for t, m, s in zip(tensor, self.mean, self.std):
             t.mul_(s).add_(m)
             # The normalize code -> t.sub_(m).div_(s)
-        return tensor
+        return tensor.contiguous()
+
+class NoTransform(object):
+    def __call__(self, img, target):
+        return img, target
 
 class Compose(object):
     def __init__(self, transforms):

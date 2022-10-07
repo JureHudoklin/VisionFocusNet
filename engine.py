@@ -23,6 +23,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         outputs = model(samples, tgt_imgs, targets)
+
         
         loss_dict, stats_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
@@ -39,15 +40,20 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
         
+        cl = outputs["pred_class_logits"]
+        
         loss_dict["loss"] = losses
         loss_dict["loss_matching"] = loss_matching
         loss_dict["loss_dn"] = loss_dn
         stats_dict["loss"] = losses
         
         stats_tracker.update(loss_dict, stats_dict)
-        
+    
         if batch % 100 == 0:
             stats_tracker.save_info(os.path.join(log_dir, "info_train.txt"), epoch, batch)
+
+        if batch % 1000 == 0:
+            display_model_outputs(outputs, samples, tgt_imgs, targets)
 
         # print statistics
         if batch % 1 == 0:
@@ -58,7 +64,6 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
         
         batch += 1
         
-    display_model_outputs(outputs, samples, targets)
 
     
     return stats_tracker.get_stats()

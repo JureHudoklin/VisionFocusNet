@@ -31,18 +31,22 @@ def load_model(model, optimizer, load_dir, device, epoch=None):
 
 
 
-
-def display_model_outputs(outputs, samples, targets):
+@torch.no_grad()
+def display_model_outputs(outputs, samples, tgt_imgs, targets):
     bs = len(targets)
     denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    denorm2 = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
-    fig, ax = plt.subplots(bs, 1, figsize=(3, 2*bs))
+    fig, axs = plt.subplots(bs, 2, figsize=(6, 2*bs))
     for b in range(bs):
         img = denorm(samples.tensors[b])
         img = img.permute(1, 2, 0).cpu().numpy()
+        tgt_img = denorm2(tgt_imgs.tensors[b].contiguous())
+        tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
         
-        ax[b].imshow(img)
-        ax[b].axis("off")
+        ax = axs[b, 0]
+        ax.imshow(img)
+        ax.axis("off")
         
         mask = samples.mask[b].cpu().numpy()
         not_mask = np.logical_not(mask)
@@ -54,20 +58,34 @@ def display_model_outputs(outputs, samples, targets):
             assert isinstance(box, torch.Tensor)
             cx, cy, w, h = box.cpu().numpy()
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax[b].add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="red", linewidth=1))
+            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="red", linewidth=1))
             obj_id = targets[b]["labels"][i].item()
-            ax[b].text(x, y, f"ID:{obj_id}", color="red", fontsize=3)
+            ax.text(x, y, f"ID:{obj_id}", color="red", fontsize=3)
         
-        class_logits = outputs["pred_class_logits"][b].softmax(-1)
-        for i in range(class_logits.shape[0]):
-            obj_id = class_logits[i].argmax().item()
-            if obj_id == 0:
-                continue
-        
-            cx, cy, w, h = outputs["pred_boxes"][b, i, :].cpu().detach().numpy()
+        class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
+        top_k = 5
+        val, idx = class_logits[:, 1].topk(top_k)
+        for i in range(top_k):
+            id = idx[i].item()
+            vl = val[i].item()
+            obj_bg = class_logits[id].argmax().item()
+            if obj_bg == 0:
+                edgecolor = "blue"
+                alpha = 0.3
+            else:
+                edgecolor = "black"
+                alpha = 1
+
+            cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
+
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax[b].add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="blue", linewidth=1))
-            ax[b].text(x, y, f"ID:{obj_id}", color="blue", fontsize=3)
+            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
+            ax.text(x, y, f"Conf:{vl:.2f}", color="blue", fontsize=3)
+            
+        ax = axs[b, 1]
+        ax.imshow(tgt_img)
+        ax.axis("off")
+            
             
         plt.savefig("outputs.png", dpi=300)
     plt.close()

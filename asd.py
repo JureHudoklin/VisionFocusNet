@@ -1,3 +1,4 @@
+import random
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,17 +7,39 @@ import math
 import torch.nn as nn
 
 from util.misc import NestedTensor
-from data_generator.coco import get_coco_data_generator, display_data, build_dataset
+from data_generator.coco import get_coco_data_generator, display_data#, build_dataset
+from data_generator.AVD import build_dataset
 from data_generator.transforms import DeNormalize
-from configs.detr_basic_config import Config
+from configs.vision_focusnet_config import Config
 
 from models.position_encoding import build_position_encoding
 from models.backbone import build_backbone
+from models.template_encoder import build_resnet_template_encoder
 
 
 if __name__ == "__main__":
     cfg = Config()
-        # denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    
+    
+    
+    cfg = Config()
+    avd = build_dataset("train", cfg)
+    #avd = AVDLoader(AVD_ROOT_DIR, scenes = scene_list)
+    
+    
+    img, tgt_img,  annotation = avd[1] #random.randint(0, len(avd))
+    avd.show(1)
+    exit()
+    img, tgt_img = denorm(img), denorm(tgt_img)
+    plt.imshow(img.permute(1, 2, 0))
+    plt.savefig("test.png")
+    plt.imshow(tgt_img.permute(1, 2, 0))
+    plt.savefig("test1.png")
+    print(annotation)
+    exit()
+    
+        # 
         
         # coco = build_dataset("train", cfg)
         # img, tgt_img, target = coco[0]
@@ -30,6 +53,16 @@ if __name__ == "__main__":
         
         # exit()
     
+     
+    
+    # resnet = build_resnet_template_encoder(None)
+    # resnet.cuda()
+    # a = torch.rand(1, 3, 224, 224).cuda()
+    # b = NestedTensor(a, None)
+    # out = resnet(b)
+    # print(out.tensors.shape)
+    # exit()
+    
     
     # pos = torch.rand(100, 3, 32)
     # pos_scales = torch.rand(100, 3, 2)
@@ -41,9 +74,6 @@ if __name__ == "__main__":
         
         train_data_loader, test_data_loader = get_coco_data_generator(cfg)
         i = 0
-        for ds in train_data_loader:
-            print(i)
-            i += 1
         
         data = next(iter(train_data_loader))
         data = next(iter(train_data_loader))

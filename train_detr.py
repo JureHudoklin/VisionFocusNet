@@ -33,7 +33,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "debug_2"
+        date = "debug_5"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -61,12 +61,14 @@ def main(args):
     print("number of params:", n_parameters)
     # Set the optimizer
     param_dicts = [
-        {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
+        {"params": [p for n, p in model.named_parameters() if ("backbone" not in n) and ("template_encoder" not in n) and p.requires_grad]},
         {
             "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
             "lr": cfg.LR_BACKBONE,
         },
     ]
+    param_dicts.append({"params": [p for n, p in model.named_parameters() if "template_encoder" in n and p.requires_grad],
+                        "lr": cfg.TEMPLATE_ENCODER["LR"]})
     
     optimizer = torch.optim.AdamW(param_dicts, lr=cfg.LR,
                                   weight_decay=cfg.WEIGHT_DECAY)

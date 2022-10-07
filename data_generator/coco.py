@@ -2,6 +2,7 @@
 Modified dataloader for COCO dataset.
 """
 
+from enum import unique
 import os
 import numpy as np
 import torch
@@ -129,7 +130,6 @@ def display_data(data):
             
             cx, cy, w, h = bboxs[i]
             x, y, w, h = int((cx-w/2)*img_w), int((cy-h/2)*img_h), int(w*img_w), int(h*img_h)
-            #x, y, w, h = int(x*img_w), int(y*img_h), int(w*img_w), int(h*img_h)
             
             obj_id = lbls[i]
             
@@ -208,8 +208,9 @@ def get_coco_api_from_dataset(dataset):
 
 class CocoFormat(object):
     def __init__(self):
-        same_classes = {47:"banana", 48:"apple", 50:"orange", 51:"broccoli", 52:"carrot"}
-        simmilar_classes = {} #TO do
+        self.same_classes = {47:"banana", 48:"apple", 50:"orange", 51:"broccoli", 52:"carrot"}
+        self.simmilar_classes = {} #TO do
+        self.exclude_classes = {1:"people"}
         pass
     
     def prepare_base_labels(self, image, target):
@@ -256,20 +257,32 @@ class CocoFormat(object):
 
         return image, target
 
-    def prepare_target_img(self, image, target):
+    def prepare_target_img(self, image, target, area_limit = 600):
         labels = target["labels"]
+        unique_labels = torch.unique(labels)
+        unique_labels_list = unique_labels.tolist()
+        random.shuffle(unique_labels_list)
+        for keys in self.exclude_classes.keys():
+            if keys in unique_labels_list:
+                unique_labels_list.remove(keys)
 
-        selected_idx = random.sample(range(labels.shape[0]), k=1)
-        selected_idx = torch.tensor(selected_idx, dtype=torch.int64)
-        selected_class = labels[selected_idx]
-        same_class_idx = torch.where(labels == selected_class)[0] #
+        for selected_class in unique_labels_list:
+            class_id = selected_class
+            same_class_idx = torch.where(labels == selected_class)[0]
+            box_areas = target["area"][same_class_idx]
+            max_area, max_area_idx = torch.max(box_areas, dim=0)
+            if max_area < area_limit:
+                continue
+            else:
+                break
+        else:
+            return image, None, None
 
-        
         # Get all labels of the same class
         new_target = {}
         new_target["boxes"] = target["boxes"][same_class_idx]
-        new_target["labels"] = target["labels"][same_class_idx]
-        new_target["labels"] = torch.ones_like(new_target["labels"])
+        new_target["class_ids"] = target["labels"][same_class_idx]
+        new_target["labels"] = torch.ones_like(new_target["class_ids"])
         new_target["area"] = target["area"][same_class_idx]
         new_target["iscrowd"] = target["iscrowd"][same_class_idx]
         new_target["orig_size"] = target["orig_size"]
@@ -277,12 +290,15 @@ class CocoFormat(object):
         
         # Set similarity indices:
         similarity_idx = torch.zeros_like(labels)
-        similarity_idx[selected_idx] = 1
+        similarity_idx[max_area_idx] = 1
+        if class_id in self.same_classes:
+            similarity_idx[:] = 1
         new_target["sim_label"] = similarity_idx[same_class_idx]
 
 
-        tgt_box = target["boxes"][selected_idx]
-        tgt_image = image.crop(tgt_box[0].tolist())
+        tgt_box = new_target["boxes"][max_area_idx]
+        tgt_box_int = tgt_box.int()
+        tgt_image = image.crop(tgt_box_int.tolist())
         
         return image, tgt_image, new_target
        
@@ -331,17 +347,17 @@ def make_tgtimg_transforms():
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     return T.Compose([
-        T.Resize((224,224)),
         T.RandomSelect(
             T.RandomRotate(),
             T.RandomHorizontalFlip(),
             ),
+        T.Resize(224, max_size=448),
 
         ST.RandomSelectMulti([
-            ST.AdjustBrightness(2),
-            ST.AdjustContrast(2),
+            ST.AdjustBrightness(1.5),
+            ST.AdjustContrast(1.5),
             #ST.LightingNoise(),
-            T.RandomHorizontalFlip(),
+            T.NoTransform(),
         ]),
         normalize,
     ])

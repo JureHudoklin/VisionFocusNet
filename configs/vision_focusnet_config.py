@@ -13,7 +13,7 @@ class Config():
     WEIGHT_DECAY = 0.0001 # I Change it from 1e-4
     LR_DROP = 25 # Drop LR after X epochs
     
-    BATCH_SIZE = 6
+    BATCH_SIZE = 12
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -21,7 +21,7 @@ class Config():
     
     FOCAL_ALPHA = 0.25
     
-    CLASS_LOSS_COEF = 1.0
+    CLASS_LOSS_COEF = 1
     SIM_LOSS_COEF = 1.0
     BBOX_LOSS_COEF = 5.0
     GIOU_LOSS_COEF = 2.0
@@ -55,17 +55,18 @@ class Config():
     # Template Encoder #
     ####################
     TEMPLATE_ENCODER = {
-        "LR" : 0,
+        "LR" : 0.000005,
         "PRETRAINED" : True,
     }
     
     # DN-DETR
     DN_ARGS = {
-        "USE_DN" : False,
+        "USE_DN" : True,
         "USE_DN_AUX" : True,
         "LABEL_NOISE_SCALE": 0.2,
         "BOX_NOISE_SCALE": 0.4,
         "NUM_DN_GROUPS": 5,
+        "USE_INDICATOR": False,
     }
     
     ###########
@@ -80,6 +81,7 @@ class Config():
     ###########
     NUM_WORKERS = 2
     COCO_PATH = "/home/jure/datasets/COCO/images"
+    AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
 
     def __init__(self, load_path = None, save_path = None):
         """

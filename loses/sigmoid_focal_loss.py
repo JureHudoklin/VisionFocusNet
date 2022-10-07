@@ -56,12 +56,6 @@ def binary_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: fl
     return loss.mean(-1).sum() / num_boxes # [bs, ]
 
 
-
-
-
-
-
-
 class FocalLoss(nn.Module):
     def __init__(self, alpha=0.25, gamma=2, reduction="mean"):
         super(FocalLoss, self).__init__()
@@ -72,8 +66,9 @@ class FocalLoss(nn.Module):
         if isinstance(alpha,list): self.alpha = torch.Tensor(alpha)
         
     def multi_class(self, input, target):
-        logpt = F.log_softmax(input)
+        logpt = F.log_softmax(input, dim=-1)
         logpt = logpt.gather(1,target)
+        print(logpt)
         logpt = logpt.view(-1)
         pt = Variable(logpt.data.exp())
 
@@ -97,18 +92,11 @@ class FocalLoss(nn.Module):
         nt = 1 - pt
         logpt = torch.log(pt)
         lognt = torch.log(nt)
-        #logpt = F.logsigmoid(input)
-        #lognt = F.logsigmoid(-input)
-        #pt = logpt.exp()
-        #nt = lognt.exp()
-        loss = -1 * (self.alpha[0] * (1-pt)**self.gamma * logpt * target + self.alpha[1] * pt**self.gamma * lognt* (1 - target)) 
-        #print(loss)
-        #loss = -1 * (1 - input)**self.gamma * target * logpt - (1 - target)**self.gamma * (1 - input) * lognt
-        # if self.alpha is not None:
-        #     if self.alpha.type()!=input.data.type():
-        #         self.alpha = self.alpha.type_as(input.data)
-        #     at = self.alpha.gather(0,target.data.view(-1))     
-        #     loss = loss * Variable(at)
+
+        loss = -1 * \
+                (self.alpha[0] * (1-pt)**self.gamma * logpt * target  \
+                + self.alpha[1] * pt**self.gamma * lognt* (1 - target)) 
+
         if self.reduction == "mean": return loss.mean()
         elif self.reduction == "sum": return loss.sum()
         elif self.reduction == "none": return loss
@@ -125,15 +113,58 @@ class FocalLoss(nn.Module):
         else:
             return self.binary_class(input, target)
 
+def focal_loss(input, target, alpha=0.25, gamma=2, reduction='mean'):
+    """
+    Parameters
+    ----------
+    input : torch.Tensor # [bs, N, C]
+    target : torch.Tensor # [bs, N]
+    alpha : float, optional
+        Weight of positive class, by default 0.25
+    gamma : int, optional by default 2
+    reduction : str, optional
+        "sum", "mean", "none", by default 'mean'
 
+    Returns
+    -------
+    torch.Tensor # [bs, ]
+        The calculated loss
+    """
+    if input.dim()>2:
+        input = input.contiguous().view(-1,input.shape[-1])   # ..., C=> N,C
+    target = target.view(-1,1) # N,1
 
+    
+    if input.shape[-1] > 1:
+        logpt = F.log_softmax(input, dim=-1)
+        logpt = logpt.gather(1,target)
+        logpt = logpt.view(-1)
+        pt = Variable(logpt.data.exp())
 
+        if alpha is not None:
+            alpha = torch.Tensor([alpha,1-alpha])
+            if alpha.type()!=input.data.type():
+                alpha = alpha.type_as(input.data)
+            at = alpha.gather(0,target.data.view(-1))
+            logpt = logpt * Variable(at)
 
+        loss = -1 * (1-pt)**gamma * logpt
+        
+    else:
+        input = input.view(-1)
+        target = target.view(-1)
+        pt = torch.sigmoid(input)
+        nt = 1 - pt
+        logpt = torch.log(pt)
+        lognt = torch.log(nt)
 
+        loss = -1 * (alpha * (1-pt)**gamma * logpt * target + (1-alpha) * pt**gamma * lognt* (1 - target)) 
 
-
-
-
+    if reduction == "mean": return loss.mean()
+    elif reduction == "sum": return loss.sum()
+    elif reduction == "none": return loss
+    else:
+        raise NotImplementedError
 
 
 def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
@@ -164,66 +195,16 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
     return loss.mean(1).sum() / num_boxes # [bs, ]
 
 
-def focal_loss(input, target, alpha=0.25, gamma=2, reduction='mean'):
-    if input.dim()>2:
-        input = input.contiguous().view(-1,input.shape[-1])   # ..., C=> N,C
-    target = target.view(-1,1) # N,1
-
-    logpt = F.log_softmax(input)
-    logpt = logpt.gather(1,target)
-    logpt = logpt.view(-1)
-    pt = Variable(logpt.data.exp())
-
-    if alpha is not None:
-        if isinstance(alpha,(float,int,torch.long)): alpha = torch.Tensor([alpha,1-alpha])
-        if alpha.type()!=input.data.type():
-            alpha = alpha.type_as(input.data)
-        at = alpha.gather(0,target.data.view(-1))
-        logpt = logpt * Variable(at)
-
-    loss = -1 * (1-pt)**gamma * logpt
-    if reduction == "mean": return loss.mean()
-    else: return loss.sum()
 
 
-
-
-def simple_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
-    """
-    Modified Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
-    Args:
-        inputs: A float tensor of  shape [N]
-                The predictions for each example.
-        targets: A float tensor with the same shape as inputs. Stores the binary
-                 classification label for each element in inputs
-                (0 for the negative class and 1 for the positive class).
-        alpha: (optional) Weighting factor in range (0,1) to balance
-                positive vs negative examples. Default = -1 (no weighting).
-        gamma: Exponent of the modulating factor (1 - p_t) to
-               balance easy vs hard examples.
-    Returns:
-        Loss : Tensor [1]
-    """
-    inputs = inputs.view(-1, 1)
-    targets = targets.view(-1, 1)
-    prob = inputs.sigmoid() # [N]
-
-    ce_loss = F.binary_cross_entropy_with_logits(inputs.float(), targets.float(), reduction="none") # [N]
-    p_t = prob
-    p_t[targets == 1] = 1 - p_t[targets == 1]
-    loss = ce_loss * ((1 - p_t) ** gamma)
+if __name__ == "__main__":
+    sfl_class = FocalLoss(alpha=0.25, gamma=2, reduction="none")
     
-    # alpha_t = torch.ones_like(targets, dtype=torch.float32, device=inputs.device) * alpha
-    # alpha_t[targets == 1] = 1 - alpha
-    
-    # loss = alpha_t * loss
-    
-    return loss.sum() / num_boxes # [bs, ]
+    src = torch.tensor([[[0,10], [0, 10], [0.5, 0.5], [0.9, 0.1], [0.1, 0.9]]])
+    src_2 = src.softmax(dim=-1)[..., 1]
+    tgt = torch.tensor([[1, 0, 1, 0, 1]])
 
+    print(sfl_class(src, tgt))
+    print(focal_loss(src, tgt, alpha=0.25, gamma=2, reduction="none"))
+    print(focal_loss(src_2.view(-1, 1), tgt.view(1, -1), alpha=0.25, gamma=2, reduction="none"))
 
-if __name__ =="__main__":
-    a = torch.tensor([0, 1], dtype=torch.long)
-    b = torch.tensor([[5,100], [1,5]], dtype=torch.float32)
-    
-    
-    print(binary_focal_loss(b, a, 1, one_hot=False))

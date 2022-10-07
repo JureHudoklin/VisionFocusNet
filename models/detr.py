@@ -13,14 +13,14 @@ from torchvision.ops import generalized_box_iou, box_convert
 from util import box_ops
 from util.misc import NestedTensor, nested_tensor_from_tensor_list
 from util.statistics import accuracy
-from util.dn_utils import prepare_for_dn, dn_post_process, compute_dn_loss
+from util.dn_utils import prepare_for_dn, dn_post_process, DnLoss
 
 
 from .backbone import build_backbone
 from .transformer import build_transformer
-from .template_encoder import build_template_encoder
+from .template_encoder import build_template_encoder, build_resnet_template_encoder
 from .layer_util import MLP, inverse_sigmoid
-from loses.sigmoid_focal_loss import sigmoid_focal_loss, binary_focal_loss, simple_focal_loss, focal_loss, FocalLoss
+from loses.sigmoid_focal_loss import sigmoid_focal_loss, focal_loss, FocalLoss
 
 from loses.hungarian_matcher import build_matcher
 
@@ -50,34 +50,30 @@ class DETR(nn.Module):
         
         #self.bbox_embed = MLP(self.hidden_dim, self.hidden_dim, 4, 3)
         self.refpoint_embed = nn.Embedding(num_queries, 4)
-        
-        # Input: +1 for unknown class label, Output: -1 to leave space for denoising indicator
-        self.label_enc = nn.Embedding(3, self.hidden_dim - 1)
+               
+        self.label_enc = nn.Embedding(3, self.hidden_dim)
         self.num_classes = num_classes
-        
         
         self.input_proj = nn.Conv2d(backbone.num_channels, self.hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss 
         
         self.template_encoder = template_encoder
-        self.template_proj = nn.Linear(template_encoder.out_channels, self.hidden_dim-1)
+        self.template_proj = nn.Linear(template_encoder.out_channels, self.hidden_dim)
 
         
         # init prior_prob setting for focal loss
         #prior_prob = 0.01
         prior_prob = 0.2
-        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        bias_value = math.log((1 - prior_prob) / prior_prob)
         #self.class_embed.bias.data.shape # (2,)
         # Number of [0, 1] lables is very small
         
-        self.class_embed.bias.data = torch.tensor([-0.1, -4])
-        self.sim_embed.bias.data = torch.tensor([prior_prob])
+        self.class_embed.bias.data = torch.tensor([0.01, 0.99])
+        self.sim_embed.bias.data = torch.tensor([bias_value])
         #torch.ones(num_classes) * bias_value
         
-        if dn_args is not None:
-            self.dn_args = dn_args
-            
+        self.dn_args = dn_args            
      
 
     def forward(self, samples: NestedTensor, samples_targets: NestedTensor, targets = None):
@@ -124,7 +120,7 @@ class DETR(nn.Module):
         #####################
         obj_enc = self.template_encoder(samples_targets)
         obj_enc = obj_enc.decompose()[0] # [BS, C]
-        obj_enc = self.template_proj(obj_enc) + self.label_enc(torch.tensor(2).cuda()) # [BS, C]
+        obj_enc = self.template_proj(obj_enc)# + self.label_enc(torch.tensor(2).cuda()) # [BS, C]
         ref_tgt = obj_enc.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
         ref_tgt = ref_tgt.permute(1, 0, 2) # [NQ, BS, C]
         
@@ -162,7 +158,6 @@ class DETR(nn.Module):
         
         # DB post processing
         outputs_class, output_sim, outputs_coord, mask_dict = dn_post_process(outputs_class, output_sim, outputs_coord, mask_dict)
-
         
         out = {"pred_class_logits": outputs_class[-1], "pred_sim_logits": output_sim[-1], "pred_boxes": outputs_coord[-1], "mask_dict": mask_dict}
         
@@ -187,7 +182,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, focal_alpha, losses):
+    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, dn_args, focal_alpha, losses):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -201,13 +196,12 @@ class SetCriterion(nn.Module):
         self.matcher = matcher
         self.weight_dict = weight_dict
         self.dn_weight_dict = dn_weight_dict
+        self.dn_args = dn_args
         self.focal_alpha = focal_alpha
         self.losses = losses
         self.stats = {}
-        if "labels" in losses:
-            self.class_loss = FocalLoss(alpha=0.25, reduction="none") #self.focal_alpha
-        if "similarity" in losses:
-            self.sim_loss = FocalLoss(alpha=0.25, reduction="none") #self.focal_alpha
+        
+        self.dn_loss = DnLoss()
         
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
@@ -236,7 +230,8 @@ class SetCriterion(nn.Module):
         target_classes[idx] = target_classes_o # [bs, q]
         
 
-        loss_ce = self.class_loss(outputs_logits, target_classes) # scalar
+        #loss_ce = self.class_loss(outputs_logits, target_classes) # scalar
+        loss_ce = focal_loss(outputs_logits, target_classes, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
         loss_ce = loss_ce.view(bs, q, -1) # [bs, q, 2]
         loss_ce = (loss_ce.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
         
@@ -247,6 +242,9 @@ class SetCriterion(nn.Module):
             stats = {"loss_ce": loss_ce}
             predicted_bg = (outputs_logits.argmax(-1) == 0).sum()
             predicted_obj = (outputs_logits.argmax(-1) == 1).sum()
+            if predicted_bg == 0 and predicted_obj == 0:
+                print(outputs_logits.argmax(-1))
+                exit()
             acc = accuracy(outputs_logits[idx], target_classes_o)[0]
             stats = {"class_acc": acc}
             stats.update({"predicted_bg": predicted_bg, "predicted_obj": predicted_obj})
@@ -277,7 +275,8 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
         target_classes[idx] = target_classes_o # [bs, q]
         
-        loss_sim = self.sim_loss(outputs_logits[idx], target_classes_o) # scalar
+        #loss_sim = self.sim_loss(outputs_logits[idx], target_classes_o) # scalar
+        loss_sim = focal_loss(outputs_logits[idx], target_classes_o, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
         loss_sim = loss_sim.mean()
         # loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
         # loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
@@ -299,9 +298,9 @@ class SetCriterion(nn.Module):
         device = pred_logits.device
         tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device) # [bs]
         # Count the number of predictions that are NOT "no-object" (which is the last class)
-        card_pred = pred_logits.sigmoid()
+        card_pred = pred_logits.softmax(dim = -1)
         card_pred = torch.where(card_pred > 0.5, torch.ones_like(card_pred), torch.zeros_like(card_pred))
-        card_pred = card_pred.sum(-1).sum(-1) # [bs, q]
+        card_pred = card_pred[..., 1].sum()
         card_err = F.l1_loss(card_pred.float(), tgt_lengths.float()) 
         losses = {"cardinality_error": card_err}
         stats = {}
@@ -415,10 +414,11 @@ class SetCriterion(nn.Module):
         ###############
         ### DN LOSS ###
         ###############
-        # mask_dict = outputs["mask_dict"]
-        # aux_num = len(outputs["aux_outputs"])
-        # dn_losses = compute_dn_loss(mask_dict, self.training, aux_num, self.focal_alpha)
-        # losses.update(dn_losses)
+        if self.dn_args["USE_DN"]:
+            mask_dict = outputs["mask_dict"]
+            aux_num = len(outputs["aux_outputs"])
+            dn_losses = self.dn_loss(outputs["pred_class_logits"], outputs["pred_sim_logits"], outputs["pred_boxes"], mask_dict, aux_num)
+            losses.update(dn_losses)
         
         return losses, stats
         
@@ -476,6 +476,7 @@ def build_model(args, device):
 
     transformer = build_transformer(args)
     
+    #template_encoder = build_resnet_template_encoder(args)
     template_encoder = build_template_encoder(args)
 
     model = DETR(
@@ -501,7 +502,6 @@ def build_model(args, device):
     
     # Dn Loss Weights
     dn_weight_dict = {}
-    print(args.DN_ARGS)
     if args.DN_ARGS["USE_DN"]:
         dn_weight_dict["tgt_loss_ce"] = args.CLASS_LOSS_COEF
         dn_weight_dict["tgt_loss_sim"] = args.SIM_LOSS_COEF
@@ -521,6 +521,7 @@ def build_model(args, device):
                              matcher=matcher, 
                              weight_dict=weight_dict,
                              dn_weight_dict=dn_weight_dict,
+                             dn_args = args.DN_ARGS,
                              focal_alpha=args.FOCAL_ALPHA,
                              losses=losses)
     criterion.to(device)
