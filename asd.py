@@ -7,9 +7,12 @@ import math
 import torch.nn as nn
 
 from util.misc import NestedTensor
-from data_generator.coco import get_coco_data_generator, display_data#, build_dataset
-from data_generator.AVD import build_dataset
+from data_generator.coco import get_coco_data_generator#, build_dataset
+from data_generator.AVD import build_AVD_dataset, get_avd_data_generator
+from data_generator.GMU_kitchens import build_GMU_dataset, get_gmu_data_generator
+from data_generator.Objects365 import build_365_dataset, get_365_data_generator
 from data_generator.transforms import DeNormalize
+from data_generator.data_utils import display_data
 from configs.vision_focusnet_config import Config
 
 from models.position_encoding import build_position_encoding
@@ -20,64 +23,38 @@ from models.template_encoder import build_resnet_template_encoder
 if __name__ == "__main__":
     cfg = Config()
     denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    
-    
-    
-    cfg = Config()
-    avd = build_dataset("train", cfg)
-    #avd = AVDLoader(AVD_ROOT_DIR, scenes = scene_list)
-    
-    
-    img, tgt_img,  annotation = avd[1] #random.randint(0, len(avd))
-    avd.show(1)
-    exit()
-    img, tgt_img = denorm(img), denorm(tgt_img)
-    plt.imshow(img.permute(1, 2, 0))
-    plt.savefig("test.png")
-    plt.imshow(tgt_img.permute(1, 2, 0))
-    plt.savefig("test1.png")
-    print(annotation)
-    exit()
-    
-        # 
-        
-        # coco = build_dataset("train", cfg)
-        # img, tgt_img, target = coco[0]
-        # img = denorm(img)
-        # tgt_img = denorm(tgt_img)
-        # fig, ax = plt.subplots(1, 2)
-        # ax[0].imshow(img.permute(1, 2, 0))
-        # ax[1].imshow(tgt_img.permute(1, 2, 0))
-        # plt.savefig("asd.png")
-        # #plt.imshow(img.permute(1, 2, 0))
-        
-        # exit()
-    
-     
-    
-    # resnet = build_resnet_template_encoder(None)
-    # resnet.cuda()
-    # a = torch.rand(1, 3, 224, 224).cuda()
-    # b = NestedTensor(a, None)
-    # out = resnet(b)
-    # print(out.tensors.shape)
+    # import PIL
+    # img = PIL.Image.open("/home/jure/datasets/Objects365/data/images/train/objects365_v1_00262750.jpg")
+    # plt.imshow(img)
+    # plt.savefig("test123.png")
     # exit()
     
-    
-    # pos = torch.rand(100, 3, 32)
-    # pos_scales = torch.rand(100, 3, 2)
-    # out = pos*pos_scales
-    # print(out.shape)
-
+    # ds = Objects365Loader(root_dir="/home/jure/datasets/Objects365/data", split="train")
+    # print(len(ds))
+    # ds.show(1)
+    # print(ann)
+    # plt.imshow(tgt_img)
+    # plt.savefig("asd.png")
+ 
     # Test data loader
     if True:
         
-        train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+        train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
         i = 0
         
         data = next(iter(train_data_loader))
-        data = next(iter(train_data_loader))
 
+        display_data(data)
+        
+    if False:
+        
+        train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
+        i = 0
+        for i, data in enumerate(train_data_loader):
+            if i%100 == 0:
+                print(f"{i}/{len(train_data_loader)}")
+            _, _, targets = data
+            
         display_data(data)
         
     # Test position encoding

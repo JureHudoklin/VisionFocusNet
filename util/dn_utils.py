@@ -60,14 +60,14 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
     
   
     if training and dn_args["USE_DN"] and dn_args is not None:
-        known = [(torch.ones_like(t['sim_label'])).cuda() for t in targets] #[[L], ...]
+        known = [(torch.ones_like(t["sim_labels"])).cuda() for t in targets] #[[L], ...]
         know_idx = [torch.nonzero(t) for t in known] #[[L, 1], ...]
         known_num = [sum(k) for k in known] #[L, ...] # Number of known labels in each image of batch
 
-        sim_label = torch.cat([t['sim_label'] for t in targets]) # [N]
+        sim_label = torch.cat([t["sim_labels"] for t in targets]) # [N]
         class_label = torch.cat([t['labels'] for t in targets]) # [N]
         boxes = torch.cat([t['boxes'] for t in targets]) # [N, 4]
-        batch_idx = torch.cat([torch.full_like(t['sim_label'].long(), i) for i, t in enumerate(targets)])  # [N] (0,0,0,1,1,...)
+        batch_idx = torch.cat([torch.full_like(t["sim_labels"].long(), i) for i, t in enumerate(targets)])  # [N] (0,0,0,1,1,...)
 
         known_indice = torch.nonzero(torch.cat(known)) # [N, 1]
         known_indice = known_indice.view(-1) # [N] (1,2,3,4, ... N)
@@ -226,7 +226,7 @@ class DnLoss(nn.Module):
                 'tgt_class_error': torch.as_tensor(0.).to('cuda'),
             }
 
-        loss_ce = focal_loss(out_lbl.view(1, -1, 2), tgt_lbl.view(1, -1), alpha=self.focal_alpha, gamma=2, reduction="none")# * out_lbl.shape[1]
+        loss_ce = focal_loss(out_lbl.view(1, -1, 2), tgt_lbl.view(1, -1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
         loss_ce = loss_ce.sum() / num_tgt
 
         losses = {'tgt_loss_ce': loss_ce}
@@ -235,7 +235,22 @@ class DnLoss(nn.Module):
         return losses
     
     def tgt_loss_sim(self, out_sim, tgt_sim, num_tgt):
-        return {}
+        """
+        out_lbl: [N, 1]
+        tgt_lbl: [N]
+        """
+        if len(tgt_sim) == 0:
+            return {
+                "tgt_loss_sim": torch.as_tensor(0.).to("cuda"),
+                "tgt_sim_error": torch.as_tensor(0.).to("cuda"),
+            }
+        loss_ce = focal_loss(out_sim.view(-1, 1), tgt_sim.view(-1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
+        loss_ce = loss_ce.sum()# / num_tgt
+
+        losses = {"tgt_loss_sim": loss_ce}
+        losses["tgt_sim_error"] = accuracy(out_sim, tgt_sim)[0]
+
+        return losses
     
     def tgt_loss_boxes(self, src_boxes, tgt_boxes, num_tgt,):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
@@ -291,7 +306,7 @@ class DnLoss(nn.Module):
                     l_dict = self.tgt_loss_labels(output_known_class[i], known_class_labels, num_tgt)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-                    l_dict = self.tgt_loss_sim(output_known_class[i], known_class_labels, num_tgt)
+                    l_dict = self.tgt_loss_sim(output_known_sim[i], known_sim_labels, num_tgt)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
                     l_dict = self.tgt_loss_boxes(output_known_coord[i], known_bboxs, num_tgt)

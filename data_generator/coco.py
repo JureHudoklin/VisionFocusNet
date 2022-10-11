@@ -95,54 +95,6 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         
         plt.savefig(f"{target['image_id']}.png")
 
-def display_data(data):
-    """_summary_
-
-    Parameters
-    ----------
-    data : tuple
-    """
-    
-    samples, samples_tgt, targets = data
-    imgs, masks = samples.decompose()
-    imgs_tgt, _ = samples_tgt.decompose()
-    
-    B = imgs.shape[0]
-    denormalize = T.DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    
-    # Create Subplots
-    fig, axs = plt.subplots(B, 2, figsize=(5, 2*B))
-    
-    for B_i in range(B):
-        ax = axs[B_i, 0]
-        
-        # Plot the image
-        img = denormalize(imgs[B_i])
-        ax.imshow(img.permute(1, 2, 0))
-        
-        # Plot bounding boxes
-        bboxs = targets[B_i]["boxes"]
-        lbls = targets[B_i]["labels"]
-        size = targets[B_i]["size"]
-        img_h, img_w = size[0], size[1]
-        
-        for i in range(len(bboxs)):
-            
-            cx, cy, w, h = bboxs[i]
-            x, y, w, h = int((cx-w/2)*img_w), int((cy-h/2)*img_h), int(w*img_w), int(h*img_h)
-            
-            obj_id = lbls[i]
-            
-            ax.add_patch(plt.Rectangle((x, y), w, h, fill=False, edgecolor='red', linewidth=1, alpha=0.5))
-            ax.text(x, y, f"ID:{obj_id}", color='red', fontsize=5)
-            
-        ax = axs[B_i, 1]
-        # Plot the image
-        img = denormalize(imgs_tgt[B_i])
-        ax.imshow(img.permute(1, 2, 0))
-    
-    plt.savefig('test1.png', dpi=500)
-
 
 def build_dataset(image_set, args):
     root = args.COCO_PATH
@@ -293,7 +245,7 @@ class CocoFormat(object):
         similarity_idx[max_area_idx] = 1
         if class_id in self.same_classes:
             similarity_idx[:] = 1
-        new_target["sim_label"] = similarity_idx[same_class_idx]
+        new_target["sim_labels"] = similarity_idx[same_class_idx]
 
 
         tgt_box = new_target["boxes"][max_area_idx]
@@ -347,15 +299,15 @@ def make_tgtimg_transforms():
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     return T.Compose([
-        T.RandomSelect(
-            T.RandomRotate(),
-            T.RandomHorizontalFlip(),
-            ),
+        # T.RandomSelect(
+        #     T.RandomRotate(),
+        #     ),
         T.Resize(224, max_size=448),
+        T.RandomHorizontalFlip(),
 
         ST.RandomSelectMulti([
-            ST.AdjustBrightness(1.5),
-            ST.AdjustContrast(1.5),
+            ST.AdjustBrightness(0.8, 1.5),
+            ST.AdjustContrast(0.8, 1.5),
             #ST.LightingNoise(),
             T.NoTransform(),
         ]),

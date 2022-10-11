@@ -21,8 +21,8 @@ class Config():
     
     FOCAL_ALPHA = 0.25
     
-    CLASS_LOSS_COEF = 1
-    SIM_LOSS_COEF = 1.0
+    CLASS_LOSS_COEF = 1.0
+    SIM_LOSS_COEF = 0.1
     BBOX_LOSS_COEF = 5.0
     GIOU_LOSS_COEF = 2.0
     
@@ -64,7 +64,7 @@ class Config():
         "USE_DN" : True,
         "USE_DN_AUX" : True,
         "LABEL_NOISE_SCALE": 0.2,
-        "BOX_NOISE_SCALE": 0.4,
+        "BOX_NOISE_SCALE": 0.2,
         "NUM_DN_GROUPS": 5,
         "USE_INDICATOR": False,
     }
@@ -79,9 +79,11 @@ class Config():
     ###########
     # Dataset #
     ###########
-    NUM_WORKERS = 2
+    NUM_WORKERS = 1
     COCO_PATH = "/home/jure/datasets/COCO/images"
     AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
+    GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"
+    OBJECTS_365_PATH = "/home/jure/datasets/Objects365/data"
 
     def __init__(self, load_path = None, save_path = None):
         """

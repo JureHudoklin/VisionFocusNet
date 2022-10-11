@@ -270,14 +270,16 @@ class SetCriterion(nn.Module):
         outputs_logits = outputs["pred_sim_logits"]
         bs, q, _ = outputs_logits.shape
         idx = self._get_src_permutation_idx(indices) # [q*bs, b_idx], [q*bs, src_idx]
-        target_classes_o = torch.cat([t["sim_label"][tgt_idx] for t, (_, tgt_idx) in zip(targets, indices)]) # [bs*q]
+        target_classes_o = torch.cat([t["sim_labels"][tgt_idx] for t, (_, tgt_idx) in zip(targets, indices)]) # [bs*q]
         target_classes = torch.full(outputs_logits.shape[:2], 0,
                                     dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
         target_classes[idx] = target_classes_o # [bs, q]
         
         #loss_sim = self.sim_loss(outputs_logits[idx], target_classes_o) # scalar
+       # print(outputs_logits[idx].shape, target_classes_o.shape)
         loss_sim = focal_loss(outputs_logits[idx], target_classes_o, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
-        loss_sim = loss_sim.mean()
+        #print(loss_sim.shape)
+        loss_sim = loss_sim.sum()# / num_boxes #(loss_sim.mean(1).sum() / num_boxes) *num_boxes
         # loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
         # loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
         # loss_sim = (loss_sim / num_boxes)* outputs_logits.shape[1]

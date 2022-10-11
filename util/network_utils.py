@@ -53,34 +53,40 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
         mask_h, mask_w = np.sum(mask[:, 0], axis=0), np.sum(mask[0, :], axis=0)
         img_h, img_w = img.shape[0]-mask_h, img.shape[1]-mask_w
         
+        # Plot GT Boxes
         
         for i, box in enumerate(targets[b]["boxes"]):
             assert isinstance(box, torch.Tensor)
             cx, cy, w, h = box.cpu().numpy()
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="red", linewidth=1))
-            obj_id = targets[b]["labels"][i].item()
-            ax.text(x, y, f"ID:{obj_id}", color="red", fontsize=3)
+            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="green", linewidth=1))
+            obj_sim = targets[b]["sim_labels"][i].item()
+            ax.text(x, y, f"SIM:{obj_sim}", color="green", fontsize=3)
         
-        class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
+        # Plot Predicted Boxes
         top_k = 5
-        val, idx = class_logits[:, 1].topk(top_k)
+        class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
+        sim_logits = outputs["pred_sim_logits"][b].sigmoid() # [Q, 1]
+        
+        class_val, class_idx = class_logits[:, 1].topk(top_k) # [N]
+        sim_val = sim_logits[class_idx]  # [N]
         for i in range(top_k):
-            id = idx[i].item()
-            vl = val[i].item()
-            obj_bg = class_logits[id].argmax().item()
+            id = class_idx[i].item() # Idx of the prediction
+            c_vl = class_val[i].item() # Class score
+            s_vl = sim_val[i].item() # Sim score
+            obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
             if obj_bg == 0:
-                edgecolor = "blue"
+                edgecolor = "black"
                 alpha = 0.3
             else:
-                edgecolor = "black"
+                edgecolor = "red"
                 alpha = 1
 
             cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
 
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
             ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
-            ax.text(x, y, f"Conf:{vl:.2f}", color="blue", fontsize=3)
+            ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=3, alpha = alpha)
             
         ax = axs[b, 1]
         ax.imshow(tgt_img)

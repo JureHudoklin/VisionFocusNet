@@ -12,8 +12,7 @@ import glob
 import json
 import PIL
 
-import data_generator.transforms as T
-import data_generator.sltransforms as ST
+from .data_utils import make_base_transforms, make_tgtimg_transforms
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 from torchvision.ops import box_convert
@@ -267,7 +266,6 @@ class FormatAVD(object):
     
         # for conversion to coco api
         target["area"] = area
-
         target["orig_size"] = torch.as_tensor([int(h), int(w)])
         target["size"] = torch.as_tensor([int(h), int(w)])
         target["image_id"] = image_id
@@ -276,6 +274,7 @@ class FormatAVD(object):
         
     def format_tgt_img(self, image, target):
         labels = target["labels"]
+        print(labels)
         unique_labels = torch.unique(labels)
         unique_labels_list = unique_labels.tolist()
         random.shuffle(unique_labels_list)
@@ -288,15 +287,17 @@ class FormatAVD(object):
         new_target["boxes"] = target["boxes"][same_class_idx]
         new_target["class_ids"] = target["labels"][same_class_idx]
         new_target["labels"] = torch.ones_like(new_target["class_ids"])
+        new_target["sim_labels"] = torch.ones_like(new_target["class_ids"])
         new_target["area"] = target["area"][same_class_idx]
         new_target["orig_size"] = target["orig_size"]
         new_target["size"] = target["size"]
+        new_target["image_id"] = target["image_id"]
         
         # Set similarity indices:
         similarity_idx = torch.ones_like(labels)
        
         tgt_img = self._get_tgt_img(selected_class)
-        return image, tgt_img, target
+        return image, tgt_img, new_target
     
     def __call__(self, image, target):
         image, target = self.format_base_lbls(image, target)
@@ -304,7 +305,7 @@ class FormatAVD(object):
         return image, tgt_img, target
     
     
-def build_dataset(image_set, args):
+def build_AVD_dataset(image_set, args):
     root = args.AVD_PATH
     assert os.path.exists(root), "Please download AVD dataset to {}".format(root)
     
@@ -312,8 +313,8 @@ def build_dataset(image_set, args):
     return dataset
 
 def get_avd_data_generator(args):
-    dataset_train = build_dataset(image_set='train', args=args)
-    dataset_val = build_dataset(image_set='val', args=args)    
+    dataset_train = build_AVD_dataset(image_set='train', args=args)
+    dataset_val = build_AVD_dataset(image_set='val', args=args)    
    
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
@@ -371,8 +372,8 @@ def make_tgtimg_transforms():
         T.Resize(224, max_size=448),
 
         ST.RandomSelectMulti([
-            ST.AdjustBrightness(1.5),
-            ST.AdjustContrast(1.5),
+            ST.AdjustBrightness(0.8, 2),
+            ST.AdjustContrast(0.5, 2),
             #ST.LightingNoise(),
             T.NoTransform(),
         ]),

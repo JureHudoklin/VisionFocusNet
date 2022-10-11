@@ -203,7 +203,7 @@ def rotate(image, target, angle):
     new_image = image.copy()
     
     if target is not None:
-        w,h = img.size
+        w,h = image.size
         whwh = torch.Tensor([w, h, w, h])
         boxes = box_cxcywh_to_xyxy(target['boxes']) * whwh
         new_boxes = boxes.clone()

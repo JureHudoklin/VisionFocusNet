@@ -11,26 +11,29 @@ import random
 from util.box_ops import box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 
 class AdjustContrast:
-    def __init__(self, contrast_factor):
-        self.contrast_factor = contrast_factor
+    def __init__(self, contrast_min_factor=0.8, contrast_max_factor=1.5):
+        self.contrast_min_factor = contrast_min_factor
+        self.contrast_max_factor = contrast_max_factor
 
     def __call__(self, img, target):
         """
         img (PIL Image or Tensor): Image to be adjusted.
         """
-        _contrast_factor = ((random.random() + 1.0) / 2.0) * self.contrast_factor
+        #_contrast_factor = random.uniform(self.contrast_min_factor, self.contrast_max_factor)
+        _contrast_factor = random.random() * (self.contrast_max_factor - self.contrast_min_factor) + self.contrast_min_factor
         img = F.adjust_contrast(img, _contrast_factor)
         return img, target
 
 class AdjustBrightness:
-    def __init__(self, brightness_factor):
-        self.brightness_factor = brightness_factor
+    def __init__(self, brightness_min = 0.5, brightness_max = 2):
+        self.brightness_min = brightness_min
+        self.brightness_max = brightness_max
 
     def __call__(self, img, target):
         """
         img (PIL Image or Tensor): Image to be adjusted.
         """
-        _brightness_factor = ((random.random() + 1.0) / 2.0) * self.brightness_factor
+        _brightness_factor = random.random() * (self.brightness_max - self.brightness_min) + self.brightness_min
         img = F.adjust_brightness(img, _brightness_factor)
         return img, target
 

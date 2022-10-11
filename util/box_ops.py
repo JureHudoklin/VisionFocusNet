@@ -59,6 +59,25 @@ def generalized_box_iou(boxes1, boxes2):
 
     return iou - (area - union) / area
 
+def box_inter_union(boxes1: torch.Tensor, boxes2: torch.Tensor):
+    def _upcast(t: torch.Tensor) -> torch.Tensor:
+        # Protects from numerical overflows in multiplications by upcasting to the equivalent higher type
+        if t.is_floating_point():
+            return t if t.dtype in (torch.float32, torch.float64) else t.float()
+        else:
+            return t if t.dtype in (torch.int32, torch.int64) else t.int()
+    area1 = box_area(boxes1)
+    area2 = box_area(boxes2)
+
+    lt = torch.max(boxes1[:, None, :2], boxes2[:, :2])  # [N,M,2]
+    rb = torch.min(boxes1[:, None, 2:], boxes2[:, 2:])  # [N,M,2]
+
+    wh = _upcast(rb - lt).clamp(min=0)  # [N,M,2]
+    inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
+
+    union = area1[:, None] + area2 - inter
+
+    return inter, union
 
 
 if __name__ == "__main__":
