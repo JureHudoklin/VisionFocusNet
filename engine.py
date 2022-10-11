@@ -52,7 +52,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
         if batch % 100 == 0:
             stats_tracker.save_info(os.path.join(log_dir, "info_train.txt"), epoch, batch)
 
-        if batch % 50 == 0:
+        if batch % 1000 == 0:
             display_model_outputs(outputs, samples, tgt_imgs, targets)
 
         # print statistics

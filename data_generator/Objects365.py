@@ -52,31 +52,36 @@ class Objects365Loader(DataLoader):
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        file = self.dataset[idx]
-        img_name = file.name.split(".")[0]
-        img_path = os.path.join(self.image_dir, img_name + ".jpg")
-        img_id = int(img_name.split("_")[-1])
-        img = PIL.Image.open(img_path)
+        try:
+            file = self.dataset[idx]
+            img_name = file.name.split(".")[0]
+            img_path = os.path.join(self.image_dir, img_name + ".jpg")
+            img_id = int(img_name.split("_")[-1])
+            img = PIL.Image.open(img_path)
 
-        with open(file, 'r') as f:
-            annotations = f.readlines()
+            with open(file, 'r') as f:
+                annotations = f.readlines()
+                
+            target = self._format_annotation(annotations, img)
+            target.update(**{"image_id": torch.tensor([img_id])})
             
-        target = self._format_annotation(annotations, img)
-        target.update(**{"image_id": torch.tensor([img_id])})
-        
-        img, tgt_img, target = self.prepare(img, target)
-        while tgt_img is None:
-            idx = random.randint(0, len(self)-1)
-            idx = idx +1 
-            return self.__getitem__(idx)
-        target = target.as_dict
+            img, tgt_img, target = self.prepare(img, target)
+            while tgt_img is None:
+                idx = random.randint(0, len(self)-1)
+                idx = idx +1 
+                return self.__getitem__(idx)
+            target = target.as_dict
 
-        
-        if self._transforms is not None:
-            img, target = self._transforms(img, target)
-        if self._tgt_transforms is not None:
-            tgt_img, _ = self._tgt_transforms(tgt_img, None)
-        return img, tgt_img, target
+            
+            if self._transforms is not None:
+                img, target = self._transforms(img, target)
+            if self._tgt_transforms is not None:
+                tgt_img, _ = self._tgt_transforms(tgt_img, None)
+            return img, tgt_img, target
+        except:
+            idx = random.randint(0, len(self)-1)
+            print("Error in loading image, trying again...")
+            return self.__getitem__(idx)
         
     
     def collate_fn(self, batch):

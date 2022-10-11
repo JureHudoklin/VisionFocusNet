@@ -302,7 +302,7 @@ class SetCriterion(nn.Module):
         # Count the number of predictions that are NOT "no-object" (which is the last class)
         card_pred = pred_logits.softmax(dim = -1)
         card_pred = torch.where(card_pred > 0.5, torch.ones_like(card_pred), torch.zeros_like(card_pred))
-        card_pred = card_pred[..., 1].sum()
+        card_pred = card_pred[..., 1].sum(1) # [bs]
         card_err = F.l1_loss(card_pred.float(), tgt_lengths.float()) 
         losses = {"cardinality_error": card_err}
         stats = {}

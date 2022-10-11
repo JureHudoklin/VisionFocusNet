@@ -36,7 +36,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "debug"
+        date = "objects365_1"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -94,7 +94,7 @@ def main(args):
 
 
     ######### GET DATASET #########
-    train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+    #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
     base_ds = build_dataset("val", cfg)
     base_ds = get_coco_api_from_dataset(base_ds)
     
@@ -102,7 +102,7 @@ def main(args):
     #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
     
     # GMU
-    #train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
+    train_data_loader, test_data_loader = get_365_data_generator(cfg)
     
     
     #########################################################

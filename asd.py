@@ -37,7 +37,7 @@ if __name__ == "__main__":
     # plt.savefig("asd.png")
  
     # Test data loader
-    if True:
+    if False:
         
         train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
         i = 0
@@ -46,9 +46,9 @@ if __name__ == "__main__":
 
         display_data(data)
         
-    if False:
+    if True:
         
-        train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
+        train_data_loader, test_data_loader = get_365_data_generator(cfg)
         i = 0
         for i, data in enumerate(train_data_loader):
             if i%100 == 0:
