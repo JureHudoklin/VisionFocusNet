@@ -11,7 +11,7 @@ import random
 import glob
 import PIL
 
-from .data_utils import make_base_transforms, make_tgtimg_transforms, Target
+from ..util.data_utils import make_base_transforms, make_tgtimg_transforms, Target
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 import xml.etree.ElementTree as ET

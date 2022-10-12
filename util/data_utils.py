@@ -4,12 +4,9 @@ import numpy as np
 import PIL
 from torchvision.transforms import ToTensor, ToPILImage, Resize
 from util.box_ops import box_inter_union
-from . import transforms as T
-from . import sltransforms as ST
-# from data_generator.coco import get_coco_data_generator
-# from data_generator.AVD import get_avd_data_generator
-# from data_generator.GMU_kitchens import get_gmu_data_generator
-# from data_generator.Objects365 import get_365_data_generator
+from util.misc import nested_tensor_from_tensor_list
+from data_generator import transforms as T
+from data_generator import sltransforms as ST
 
 
 def make_base_transforms(image_set):
@@ -129,10 +126,12 @@ def display_data(data):
     
     plt.savefig('dataset_visualize.png', dpi=500)
     
-    
-    
-def get_mixed_data(cfg):
-    1
+
+def collate_fn(self, batch):
+    batch = list(zip(*batch))
+    batch[0] = nested_tensor_from_tensor_list(batch[0])
+    batch[1] = nested_tensor_from_tensor_list(batch[1])
+    return tuple(batch)
     
 class Target():
     """
@@ -176,12 +175,27 @@ class Target():
                 continue
             if self.target[k].shape[0] != 0:
                 target_filtered[k] = self.target[k][idx]
+                if k == "boxes":
+                    target_filtered[k] = target_filtered[k].reshape(-1, 4)
             
                 
         return target_filtered
                 
     def update(self, **kwargs):
         self.target.update(kwargs)
+
+    def update_append(self, **kwargs):
+        for k in kwargs:
+            arg = kwargs[k]
+            if type(arg) != torch.Tensor:
+                arg = torch.tensor(arg)
+            if k in self.img_prop:
+                self.target[k] = kwargs[k]
+                continue
+            if self.target[k].shape[0] == 0:
+                self.target[k] = arg
+            else:
+                self.target[k] = torch.cat((self.target[k], arg), dim=0)
         
     def __getitem__(self, key):
         val = self.target[key] if key in self.target else None

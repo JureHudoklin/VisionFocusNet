@@ -8,7 +8,7 @@ import torchvision
 import random
 import PIL
 
-from .data_utils import make_base_transforms, make_tgtimg_transforms, extract_tgt_img, Target
+from util.data_utils import make_base_transforms, make_tgtimg_transforms, extract_tgt_img, Target
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 from torchvision.ops import box_convert
