@@ -1,3 +1,4 @@
+from re import S
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
@@ -83,7 +84,7 @@ def display_data(data):
     -------
     Saved plot as "dataset_visualize.png"
     """
-    
+
     samples, samples_tgt, targets = data
     imgs, masks = samples.decompose()
     imgs_tgt, _ = samples_tgt.decompose()
@@ -124,6 +125,7 @@ def display_data(data):
         img = denormalize(imgs_tgt[B_i])
         ax.imshow(img.permute(1, 2, 0))
     
+    fig.tight_layout()
     plt.savefig('dataset_visualize.png', dpi=500)
     
 
@@ -139,10 +141,12 @@ class Target():
     size : (H, W) tensor of int
     """
     def __init__(self, **kwargs):
-        self.keys = ["boxes", "labels", "sim_labels", "iscrowd", "area", "size", "orig_size", "image_id", "scene"]
+        self.keys = ["boxes", "labels", "sim_labels", "iscrowd", "area", "size", "orig_size", "image_id"]
         self.img_prop = ["size", "orig_size", "image_id", "scene"]
         self.target = {k : torch.empty(0) for k in self.keys} 
         self.target.update(kwargs)
+        self.scene = None
+        self.image_id = None
             
         
     def calc_area(self):
@@ -165,41 +169,68 @@ class Target():
         return self.target["iscrowd"]
         
     def filter(self, idx):
-        target_filtered = {}
+        filtered_dict = {}
         for k in self.keys:
             if k in self.img_prop:
-                target_filtered[k] = self.target[k]
+                filtered_dict[k] = self.target[k]
                 continue
             if idx == None:
-                target_filtered[k] = torch.empty(0)
+                filtered_dict[k] = torch.empty(0)
                 continue
             if self.target[k].shape[0] != 0:
-                target_filtered[k] = self.target[k][idx]
+                filtered_dict[k] = self.target[k][idx]
                 if k == "boxes":
-                    target_filtered[k] = target_filtered[k].reshape(-1, 4)
+                    filtered_dict[k] = filtered_dict[k].reshape(-1, 4)
             
+        self.target = filtered_dict 
+        return filtered_dict
                 
-        return target_filtered
-                
+    def __len__(self):
+        # Check that all keys have the same length
+        check = ["boxes", "labels"]
+        lens = [len(self.target[k]) for k in self.keys if k in check]
+        assert len(set(lens)) == 1, f"Target keys have different lengths: {lens}"
+        return lens[0]
+    
     def update(self, **kwargs):
-        self.target.update(kwargs)
-
-    def update_append(self, **kwargs):
-        for k in kwargs:
-            arg = kwargs[k]
-            if type(arg) != torch.Tensor:
-                arg = torch.tensor(arg)
-            if k in self.img_prop:
-                self.target[k] = kwargs[k]
-                continue
-            if self.target[k].shape[0] == 0:
-                self.target[k] = arg
-            else:
-                self.target[k] = torch.cat((self.target[k], arg), dim=0)
+        for k, v in kwargs.items():
+            if k not in self.keys:
+                raise ValueError(f"Key {k} not in Target keys: {self.keys}")
+            elif not isinstance(v, torch.Tensor):
+                v = torch.tensor(v)
+            self.target[k] = v
         
     def __getitem__(self, key):
         val = self.target[key] if key in self.target else None
         return val
+    
+    def __setitem__(self, key, val):
+        if key not in self.keys:
+            raise ValueError(f"Key {key} not in Target keys: {self.keys}")
+        elif not isinstance(val, torch.Tensor):
+                val = torch.tensor(val)
+        self.target.update({key : val})
+        
+    def make_valid(self):
+        self.target["labels"] = self.target["labels"].long()
+        self.target["sim_labels"] = self.target["sim_labels"].long()
+        self.target["iscrowd"] = self.target["iscrowd"].float()
+        self.target["area"] = self.target["area"].float()
+        self.target["size"] = self.target["size"].long()
+        self.target["orig_size"] = self.target["orig_size"].long()
+        self.target["image_id"] = self.target["image_id"].long()
+        self.target["boxes"] = self.target["boxes"].reshape(-1, 4).float()
+    
+    @property
+    def is_valid(self):
+        must_include = ["boxes", "labels", "sim_labels", "size", "orig_size"]
+        for k in must_include:
+            if k not in self.target:
+                return False
+            elif isinstance(self.target[k], torch.Tensor):
+                return True
+            else:
+                return False
         
     @property
     def as_dict(self):

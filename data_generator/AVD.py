@@ -13,7 +13,7 @@ import glob
 import json
 import PIL
 
-from ..util.data_utils import make_base_transforms, make_tgtimg_transforms, Target
+from util.data_utils import make_base_transforms, make_tgtimg_transforms, Target
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 from torchvision.ops import box_convert
@@ -22,12 +22,12 @@ from torchvision.ops import box_convert
 AVD_ROOT_DIR = "/home/jure/datasets/AVD/ActiveVisionDataset"
 
 
-
-
 class AVDLoader():
     def __init__(self, 
-                root_dir, 
+                root_dir,
+                split,
                 scenes = None,
+                val_obj_list = [],
                 keep_noobj_images = False,
                 difficulty_threshold = 3,
                 transforms = None,
@@ -47,10 +47,14 @@ class AVDLoader():
 
         self._check_data_integrity(self.scenes)
 
-        self.instane_ids = self._get_instance_ids("all_instance_id_map.txt")
-        self.dataset = self._get_dataset()
+        self.instance_ids = self._get_instance_ids("all_instance_id_map.txt")
+        self.val_obj_list = val_obj_list
+        self.train_obj_list = [id for id in self.instance_ids.keys() if id not in self.val_obj_list]
+        self.split = split
         
-        self.prepare = FormatAVD(root_dir, self.instane_ids)
+        self.dataset = self._get_dataset()
+        self.prepare = FormatAVD(root_dir, self.instance_ids)
+        
 
         
     def _get_instance_ids(self, file_name):
@@ -82,28 +86,41 @@ class AVDLoader():
                 annotations = json.load(f)
 
                 # Create Images Dictionary
+                
                 for annotation, img_name in zip(annotations.values(), annotations.keys()):
-                        target = Target()
-                        target.update(**{"image_id": img_name, "scene": scene})
+                    target = Target()
+                    target.image_id = img_name
+                    target.scene = scene
 
-                        bounding_box_info = annotation["bounding_boxes"]
+                    bounding_box_info = annotation["bounding_boxes"]
 
-                        # If we are not keeping noobj images and there are no bounding boxes, skip
-
-                        for bounding_box in bounding_box_info:
-                            image_difficulty = bounding_box[5]
-                            instance_id = bounding_box[4]
-                            bb = bounding_box[:4]
-                            # If the difficulty is larget than the threshold, skip
-                            if image_difficulty <= self.difficulty_threshold:
-                                target.update_append(**{"boxes": bb, "labels": instance_id})
-                            
-                        if len(target["labels"]) == 0 and not self.keep_noobj_images:
+                    # If we are not keeping noobj images and there are no bounding boxes, skip
+                    boxes = []
+                    labels = []
+                    for bounding_box in bounding_box_info:
+                        image_difficulty = bounding_box[5]
+                        instance_id = bounding_box[4]
+                        bb = bounding_box[:4]
+                        if self.split == "val" and instance_id in self.train_obj_list:
                             continue
-                        target.calc_area()
-                        target.calc_iscrowd()
+                        elif self.split == "train" and instance_id in self.val_obj_list:
+                            continue
 
-                        dataset.append(target)
+                        # If the difficulty is larget than the threshold, skip
+                        if image_difficulty <= self.difficulty_threshold:
+                            boxes.append(bb)
+                            labels.append(instance_id)
+                        
+                        
+                    target.update(**{"boxes": torch.tensor(boxes), "labels": torch.tensor(labels, dtype=torch.int64)})
+
+                    if len(target) == 0 and not self.keep_noobj_images:
+                        continue   
+                        
+                    target.calc_area()
+                    target.calc_iscrowd()
+
+                    dataset.append(target)
 
         return dataset
 
@@ -112,18 +129,20 @@ class AVDLoader():
 
     def __getitem__(self, idx):
         target = self.dataset[idx]
-        img_path = os.path.join(self.root_dir, target["scene"], "jpg_rgb", target["image_id"])
-        img = PIL.Image.open(img_path)
+        img_path = os.path.join(self.root_dir, target.scene, "jpg_rgb", target.image_id)
+        with PIL.Image.open(img_path) as img:
+            img.load()
         tgt_img = None
-        
         img, tgt_img, target = self.prepare(img, target)
-        target = target.as_dict
         
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         if self._tgt_transforms is not None:
-            tgt_img, _ = self._tgt_transforms(tgt_img, None)
+            w, h = tgt_img.size
+            tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.tensor([h, w]), "orig_size" : torch.tensor([h, w])}))
             
+        target.make_valid()
+        target = target.as_dict
         return img, tgt_img, target
     
     def collate_fn(self, batch):
@@ -154,7 +173,11 @@ class FormatAVD(object):
         for target_idx in ["target_0", "target_1"]:
             files_target = glob.glob(os.path.join(self.root_dir, target_idx, obj_name + "*"))
             file_path = get_file_path(files_target)
-            tgt_img = PIL.Image.open(file_path) if file_path is not None else None
+            if file_path == None:
+                    tgt_img = None
+            else:
+                with PIL.Image.open(file_path) as tgt_img:
+                    tgt_img.load()
             tgt_img = self.to_tensor(tgt_img) if tgt_img is not None else  torch.zeros(3, 1, 1)
             if tgt_img.shape[1] > tgt_img.shape[2]:
                 tgt_img = tgt_img.permute(0, 2, 1)
@@ -176,7 +199,7 @@ class FormatAVD(object):
         target.update(size = torch.torch.as_tensor([int(h), int(w)]))
         target.update(orig_size = torch.torch.as_tensor([int(h), int(w)]))
         
-        image_id = int(target["image_id"].replace(".jpg", ""))
+        image_id = int(target.image_id.replace(".jpg", ""))
         target.update(image_id = torch.tensor([image_id]))
         
         return image, target
@@ -191,14 +214,14 @@ class FormatAVD(object):
         same_class_idx = torch.where(labels == selected_class)[0]
         
         # Get all labels of the same class
-        new_target = Target(**target.filter(same_class_idx))
-        new_target.update(**{"labels": torch.ones_like(new_target["labels"]), "sim_labels" : torch.ones_like(new_target["labels"])})
+        target.filter(same_class_idx)
+        target.update(**{"labels": torch.ones_like(target["labels"]), "sim_labels" : torch.ones_like(target["labels"])})
        
         tgt_img = self._get_tgt_img(selected_class)
-        return image, tgt_img, new_target
+        return image, tgt_img, target
     
     def __call__(self, image, target):
-        assert isinstance(image, PIL.Image.Image)
+        assert isinstance(image, PIL.Image.Image), "Image must be a PIL Image"
         assert isinstance(target, Target)
         image, target = self.format_base_lbls(image, target)
         image, tgt_img, target = self.format_tgt_img(image, target)
@@ -220,9 +243,12 @@ def build_AVD_dataset(image_set, args):
                 'Home_013_1', 
                 'Home_015_1', 
                 'Home_004_2']
+    
+    VAL_OBJ_LIST = [2, 13, 18, 7, 14, 12, 8, 29, 17, 26, 6, 9, 24, 5, 32, 96, 22, 21]
+
     assert os.path.exists(root), "Please download AVD dataset to {}".format(root)
     
-    dataset = AVDLoader(root_dir=root, scenes=SCENE_LIST, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms())
+    dataset = AVDLoader(root_dir=root, split = image_set, scenes=SCENE_LIST, val_obj_list=VAL_OBJ_LIST, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms(image_set))
     return dataset
 
 def get_avd_data_generator(args):

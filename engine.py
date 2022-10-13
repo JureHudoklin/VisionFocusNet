@@ -3,18 +3,22 @@ import torch
 import numpy as np
 import time
 import os
+import matplotlib.pyplot as plt
 
 import torch.nn as nn
+#from mem_top import mem_top
+
 from util.statistics import StatsTracker
-from util.network_utils import display_model_outputs
+from util.network_utils import display_model_outputs, write_summary, save_model
 from data_generator.coco_eval import CocoEvaluator
 
 
-def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log_dir, max_norm: float = 0.1):
+def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, writer, save_dir, max_norm: float = 0.1):
     model.train()
     criterion.train()
     stats_tracker = StatsTracker()
     batch = 1
+    total_batches = len(data_loader)
     start_time = time.time()
     
     for samples, tgt_imgs, targets in data_loader:
@@ -40,33 +44,41 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, log
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
         
-        cl = outputs["pred_class_logits"]
+        with torch.no_grad():
+            loss_dict["loss"] = losses
+            loss_dict["loss_matching"] = loss_matching
+            loss_dict["loss_dn"] = loss_dn
+            stats_dict["loss"] = losses
+            
+            stats_tracker.update(loss_dict, stats_dict)
+            
+            # print statistics
+            if batch % 10 == 0:
+                ETA = (time.time() - start_time) * (total_batches-batch) / batch
+                ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
+                description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
+                print(description, )
         
-        loss_dict["loss"] = losses
-        loss_dict["loss_matching"] = loss_matching
-        loss_dict["loss_dn"] = loss_dn
-        stats_dict["loss"] = losses
-        
-        stats_tracker.update(loss_dict, stats_dict)
-    
-        if batch % 100 == 0:
-            stats_tracker.save_info(os.path.join(log_dir, "info_train.txt"), epoch, batch)
+            if batch % 100 == 0:
+                stats = stats_tracker.get_stats_current()
+                merged = {**stats[0], **stats[1]}
+                step = batch+epoch*len(data_loader)
+                write_summary(writer, merged, step, f"running_stats")
 
-        if batch % 1000 == 0:
-            display_model_outputs(outputs, samples, tgt_imgs, targets)
+            if batch % 1000 == 0:
+                fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+                writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
+                plt.close(fig)
+                
+            if batch % 10000 == 0:
+                torch.cuda.empty_cache()
+                save_model(model, optimizer, epoch, save_dir, name = "intermediate")
 
-        # print statistics
-        if batch % 1 == 0:
-            ETA = (time.time() - start_time) / batch * (len(data_loader) - batch)
-            ETA = time.strftime("%H:%M:%S", time.gmtime(ETA))        
-            description = f"E: [{epoch}], [{batch}/{len(data_loader)}] ETA: {ETA} \n {str(stats_tracker)} \n "
-            print(description, )
+           
+            
+            batch += 1
         
-        batch += 1
-        
-
-    
-    return stats_tracker.get_stats()
+    return stats_tracker.get_stats_avg()
 
 
 def evaluate(model, criterion, postprocessor, data_loader, base_ds, device, epoch, log_dir):
@@ -118,4 +130,4 @@ def evaluate(model, criterion, postprocessor, data_loader, base_ds, device, epoc
         coco_dict = {name: coco_stats[i] for i, name in enumerate(names)}
         
             
-    return stats_tracker.get_stats(), coco_dict
+    return stats_tracker.get_stats_avg(), coco_dict

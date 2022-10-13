@@ -1,6 +1,7 @@
 import torch
 from collections import deque
 
+
 class ValueStats():
     def __init__(self, window_size = 20, fmt = None) -> None:
         self.fmt = fmt
@@ -41,7 +42,10 @@ class ValueStats():
 
     @property
     def value(self):
-        return self.deque[-1]
+        val = self.deque[-1]
+        if isinstance(val, torch.Tensor):
+            return val.item()
+        return val
     
     def __str__(self):
         return self.fmt.format(
@@ -58,7 +62,7 @@ class StatsTracker():
         for k, v in new_values.items():
             if k not in tracked_values:
                 tracked_values[k] = ValueStats()
-            tracked_values[k].update(v)
+            tracked_values[k].update(v.item())
             
         return tracked_values
     
@@ -67,13 +71,19 @@ class StatsTracker():
         out = "\n ".join(out)
         return out
         
+    @torch.no_grad()
     def update(self, losses_dict, stats_dict):
-        self.tracked_losses = self._update_stats(losses_dict, self.tracked_losses)
-        self.tracked_stats = self._update_stats(stats_dict, self.tracked_stats)
+        self._update_stats(losses_dict, self.tracked_losses)
+        self._update_stats(stats_dict, self.tracked_stats)
         
-    def get_stats(self):
+    def get_stats_avg(self):
         loss_dict = {k: v.global_avg for k, v in self.tracked_losses.items()}
         stats_dict = {k: v.global_avg for k, v in self.tracked_stats.items()}
+        return loss_dict, stats_dict
+    
+    def get_stats_current(self):
+        loss_dict = {k: v.value for k, v in self.tracked_losses.items()}
+        stats_dict = {k: v.value for k, v in self.tracked_stats.items()}
         return loss_dict, stats_dict
     
     def save_info(self, path, epoch, batch):

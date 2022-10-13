@@ -8,102 +8,94 @@ import PIL
 import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
+import copy
 
 
 from torchvision.ops.misc import interpolate
 
 from util.box_ops import box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
+from util.data_utils import Target
 
 
 def crop(image, target, region, keep_boxes = True):
-    if target is None:
-        cropped_image = F.crop(image, *region)
-        return cropped_image, None
+    assert isinstance(image, PIL.Image.Image)
+    assert isinstance(target, Target)
+   
+    target = copy.deepcopy(target)
+
+    y, x, h, w = region # L, Up, R, Down
+
+    orig_w, orig_h = image.size
+
+    boxes = target["boxes"]
+    if len(boxes) == 0:
+        cropped_image = F.crop(image, y, x, h, w)
     else:
-        target = target.copy()
-
-        y, x, h, w= region # L, Up, R, Down
-
-        fields = ["labels", "area", "boxes", "sim_labels"]
-        orig_w, orig_h = image.size
-
-        if "boxes" in target:
-            boxes = target["boxes"]
-            if keep_boxes:
-                # Dont crop out any boxes
-                min_x = torch.min(boxes[:, 0]).item()
-                max_x = torch.max(boxes[:, 2]).item()
-                min_y = torch.min(boxes[:, 1]).item()
-                max_y = torch.max(boxes[:, 3]).item()
-                                
-                if x > min_x:
-                    x = int(min_x)
-                if y > min_y:
-                    y = int(min_y)
-                if x+w < max_x:
-                    w = int(max_x - x)
-                if y+h < max_y:
-                    h = int(max_y - y)
-                
-                rx = random.randint(0, x) if x > 0 else 0
-                x = x-rx
-                w = w+rx
-                w = w + random.randint(0, orig_w - (x+w)) if x+w < orig_w else w
-                ry = random.randint(0, y) if y > 0 else 0
-                y = y-ry
-                h = h+ry
-                h = h + random.randint(0, orig_h - (y+h)) if y+h < orig_h else h
+        if keep_boxes:
+            # Dont crop out any boxes
+            min_x = torch.min(boxes[:, 0]).item()
+            max_x = torch.max(boxes[:, 2]).item()
+            min_y = torch.min(boxes[:, 1]).item()
+            max_y = torch.max(boxes[:, 3]).item()
+                            
+            if x > min_x:
+                x = int(min_x)
+            if y > min_y:
+                y = int(min_y)
+            if x+w < max_x:
+                w = int(max_x - x)
+            if y+h < max_y:
+                h = int(max_y - y)
             
-            cropped_image = F.crop(image, y, x, h, w)
-            target["size"] = torch.tensor([h, w])
+            rx = random.randint(0, x) if x > 0 else 0
+            x = x-rx
+            w = w+rx
+            w = w + random.randint(0, orig_w - (x+w)) if x+w < orig_w else w
+            ry = random.randint(0, y) if y > 0 else 0
+            y = y-ry
+            h = h+ry
+            h = h + random.randint(0, orig_h - (y+h)) if y+h < orig_h else h
+        
+        cropped_image = F.crop(image, y, x, h, w)
+        target.update(size = torch.tensor([h, w]))
 
-            
-            max_size = torch.as_tensor([w, h], dtype=torch.float32)
-            cropped_boxes = boxes - torch.as_tensor([x, y, x, y])
-            cropped_boxes = cropped_boxes.clamp(min=0)
-            cropped_boxes[:, 0::2].clamp_(max=max_size[0])
-            cropped_boxes[:, 1::2].clamp_(max=max_size[1])
-            area = (cropped_boxes[:, 3] - cropped_boxes[:, 1]) * (cropped_boxes[:, 2] - cropped_boxes[:, 0])
-            target["boxes"] = cropped_boxes.reshape(-1, 4)
-            target["area"] = area
-            fields.append("boxes")
+        max_size = torch.as_tensor([w, h], dtype=torch.float32)
+        cropped_boxes = boxes - torch.as_tensor([x, y, x, y])
+        cropped_boxes = cropped_boxes.clamp(min=0)
+        cropped_boxes[:, 0::2].clamp_(max=max_size[0])
+        cropped_boxes[:, 1::2].clamp_(max=max_size[1])
+        target.update(boxes = cropped_boxes.reshape(-1, 4))
+        target.calc_area()
 
-       
-        # remove elements for which the boxes or masks that have zero area
-        if "boxes" in target:
-            # favor boxes selection when defining which elements to keep
-            # this is compatible with previous implementation
-            if "boxes" in target:
-                cropped_boxes = target['boxes'].reshape(-1, 2, 2)
-                keep = torch.all(cropped_boxes[:, 1, :] > cropped_boxes[:, 0, :], dim=1)
 
-            for k, v in target.items():
-                if k in fields:
-                    target[k] = v[keep]
-                
-        return cropped_image, target
+        cropped_boxes = target['boxes'].reshape(-1, 2, 2)
+        keep = torch.all(cropped_boxes[:, 1, :] > cropped_boxes[:, 0, :], dim=1)
+        
+        target = Target(**target.filter(keep))
+     
+    return cropped_image, target
 
 
 def hflip(image, target):
+    assert isinstance(image, PIL.Image.Image)
+    assert isinstance(target, Target)
     flipped_image = F.hflip(image)
-    if target is None:
-        return flipped_image, None
+    if len(target) == 0:
+        return flipped_image, target
     else:
         w, h = image.size
 
-        target = target.copy()
-        if "boxes" in target:
-            boxes = target["boxes"]
-            boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1]) + torch.as_tensor([w, 0, w, 0])
-            target["boxes"] = boxes
-
-        if "masks" in target:
-            target['masks'] = target['masks'].flip(-1)
+        target = copy.deepcopy(target)
+        boxes = target["boxes"]
+        boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1]) + torch.as_tensor([w, 0, w, 0])
+        target.update(boxes = boxes)
 
         return flipped_image, target
 
 
 def resize(image, target, size, max_size=None):
+    assert isinstance(image, PIL.Image.Image)
+    assert isinstance(target, Target)
     # size can be min_size (scalar) or (w, h) tuple
 
     def get_size_with_aspect_ratio(image_size, size, max_size=None):
@@ -135,60 +127,51 @@ def resize(image, target, size, max_size=None):
     size = get_size(image.size, size, max_size)
     rescaled_image = F.resize(image, size)
 
-    if target is None:
-        return rescaled_image, None
+    if len(target) == 0:
+        return rescaled_image, target
 
     ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image.size, image.size))
     ratio_width, ratio_height = ratios
 
-    target = target.copy()
-    if "boxes" in target:
-        boxes = target["boxes"]
-        scaled_boxes = boxes * torch.as_tensor([ratio_width, ratio_height, ratio_width, ratio_height])
-        target["boxes"] = scaled_boxes
-
-    if "area" in target:
-        area = target["area"]
-        scaled_area = area * (ratio_width * ratio_height)
-        target["area"] = scaled_area
+    target = copy.deepcopy(target)
+    boxes = target["boxes"]
+    scaled_boxes = boxes * torch.as_tensor([ratio_width, ratio_height, ratio_width, ratio_height])
+    target["boxes"] = scaled_boxes
+    target.calc_area()
 
     h, w = size
     target["size"] = torch.tensor([h, w])
-
-    if "masks" in target:
-        target['masks'] = interpolate(
-            target['masks'][:, None].float(), size, mode="nearest")[:, 0] > 0.5
 
     return rescaled_image, target
 
 
 def pad(image, target, padding):
+    assert isinstance(image, PIL.Image.Image)
+    assert isinstance(target, Target)
     # assumes that we only pad on the bottom right corners
     padded_image = F.pad(image, (0, 0, padding[0], padding[1]))
-    if target is None:
-        return padded_image, None
-    target = target.copy()
+    if len(target) == 0:
+        return padded_image, target
+    target = copy.deepcopy(target)
     # should we do something wrt the original size?
     target["size"] = torch.tensor(padded_image.size[::-1])
-    if "masks" in target:
-        target['masks'] = torch.nn.functional.pad(target['masks'], (0, padding[0], 0, padding[1]))
+    
     return padded_image, target
 
 def rotate_90(image, target):
+    assert isinstance(image, PIL.Image.Image)
+    assert isinstance(target, Target)
     rotated_image = image.transpose(PIL.Image.ROTATE_90)
-    if target is None:
-        return rotated_image, None
+    if len(target) == 0:
+        return rotated_image, target
     else:
         w, h = image.size
 
-        target = target.copy()
-        if "boxes" in target:
-            boxes = target["boxes"]
-            boxes = boxes[:, [1, 0, 3, 2]] * torch.as_tensor([1, -1, 1, -1]) + torch.as_tensor([0, h, 0, h])
-            target["boxes"] = boxes
+        target = copy.deepcopy(target)
 
-        if "masks" in target:
-            target['masks'] = target['masks'].flip(-2)
+        boxes = target["boxes"]
+        boxes = boxes[:, [1, 0, 3, 2]] * torch.as_tensor([1, -1, 1, -1]) + torch.as_tensor([0, h, 0, h])
+        target["boxes"] = boxes
 
         return rotated_image, target
 
@@ -196,28 +179,27 @@ def rotate(image, target, angle):
     '''
         Rotate image and bounding box
         image: A Pil image (w, h)
-        boxes: A tensors of dimensions (#objects, 4)
+        target: A tensors of dimensions (#objects, 4)
         
         Out: rotated image (w, h), rotated boxes
     '''
+    assert isinstance(image, PIL.Image.Image)
+    assert isinstance(target, Target)
     new_image = image.copy()
-    
-    if target is not None:
-        w,h = image.size
-        whwh = torch.Tensor([w, h, w, h])
-        boxes = box_cxcywh_to_xyxy(target['boxes']) * whwh
-        new_boxes = boxes.clone()
-
-    
+     
     #Rotate image, expand = True
     w = image.width
     h = image.height
     cx = w/2
     cy = h/2
     new_image = new_image.rotate(angle, expand=True)
-    if target is None:
-        return new_image.resize((w, h)), None
-        
+    if len(target) == 0:
+        return new_image, target
+    
+    whwh = torch.Tensor([w, h, w, h])
+    boxes = box_cxcywh_to_xyxy(target['boxes']) * whwh
+    new_boxes = boxes.clone()
+
     angle = np.radians(angle)
     alpha = np.cos(angle)
     beta = np.sin(angle)
@@ -291,7 +273,6 @@ def rotate(image, target, angle):
     
     target['boxes'] = box_xyxy_to_cxcywh(new_boxes).to(boxes.dtype) / (whwh + 1e-3)
 
-    
     return new_image, new_boxes
 
 class RandomCrop(object):
@@ -308,7 +289,7 @@ class RandomSizeCrop(object):
         self.min_size = min_size
         self.max_size = max_size
 
-    def __call__(self, img: PIL.Image.Image, target: dict):
+    def __call__(self, img: PIL.Image.Image, target: Target):
         w = random.randint(self.min_size, min(img.width, self.max_size))
         h = random.randint(self.min_size, min(img.height, self.max_size))
         region = T.RandomCrop.get_params(img, [h, w])
@@ -362,7 +343,7 @@ class RandomResize(object):
         self.sizes = sizes
         self.max_size = max_size
 
-    def __call__(self, img, target=None):
+    def __call__(self, img, target):
         size = random.choice(self.sizes)
         return resize(img, target, size, self.max_size)
 
@@ -371,7 +352,7 @@ class Resize(object):
         self.size = size
         self.max_size = max_size
 
-    def __call__(self, img, target=None):
+    def __call__(self, img, target):
         h, w = img.size
         if h < w:
             img, target = rotate_90(img, target)
@@ -410,24 +391,18 @@ class RejectSmall(object):
         self.min_size = min_size
 
     def __call__(self, img, target):
-        if target is None:
+        if len(target) == 0:
             return img, target
-        if "size" in target:
-            h, w = target["size"]
-        else:
-            h, w = img.size[0] * img.size[1]
+        h, w = target["size"]
+
         img_area = h * w
-        target = target.copy()
-        if ("boxes" in target) and ("area" in target):
-            boxes = target["boxes"]
-            area = target["area"]
+        target = copy.deepcopy(target)
+        boxes = target["boxes"]
+        area = target["area"]
             
         keep = area >= self.min_size
-        target["boxes"] = boxes[keep]
-        target["labels"] = target["labels"][keep]
-        target["area"] = area[keep]
-        if "masks" in target:
-            target["masks"] = target["masks"][keep]
+        target = Target(**target.filter(keep))
+
         return img, target
     
 class RejectCrowded(object):
@@ -469,17 +444,19 @@ class Normalize(object):
         self.mean = mean
         self.std = std
 
-    def __call__(self, image, target=None):
+    def __call__(self, image, target):
         image = F.normalize(image, mean=self.mean, std=self.std)
-        if target is None:
-            return image, None
-        target = target.copy()
+        if len(target) == 0:
+            return image, target
+        
+        target = copy.deepcopy(target)
+        
         h, w = image.shape[-2:]
-        if "boxes" in target:
-            boxes = target["boxes"]
-            boxes = box_xyxy_to_cxcywh(boxes)
-            boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
-            target["boxes"] = boxes
+        boxes = target["boxes"]
+        boxes = box_xyxy_to_cxcywh(boxes)
+        boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
+        target["boxes"] = boxes
+        
         return image, target
 
 class DeNormalize(object):

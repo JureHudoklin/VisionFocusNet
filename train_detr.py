@@ -36,7 +36,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "objects365_1"
+        date = "objects365_2"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -116,7 +116,7 @@ def main(args):
         print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
         
         ################ Train ###############
-        stats = train_one_epoch(model, criterion, train_data_loader, optimizer, device, epoch, log_save_dir)
+        stats = train_one_epoch(model, criterion, train_data_loader, optimizer, device, epoch, writer, save_dir)
         write_summary(writer, stats[0], epoch, "train_loss")
         write_summary(writer, stats[1], epoch, "train_stats")
         

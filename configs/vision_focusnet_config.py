@@ -10,10 +10,10 @@ class Config():
     ############
     LR = 0.0001
     LR_BACKBONE = 1e-5
-    WEIGHT_DECAY = 0.0001 # I Change it from 1e-4
+    WEIGHT_DECAY = 0.0001 
     LR_DROP = 25 # Drop LR after X epochs
     
-    BATCH_SIZE = 10
+    BATCH_SIZE = 14
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -42,7 +42,7 @@ class Config():
     DROPOUT = 0.0
     N_HEADS = 8
     
-    NUM_QUERIES = 200 # Num of object queries
+    NUM_QUERIES = 100 # Num of object queries
     D_MODEL = 256
     DIM_FEEDFORWARD = 2048
     NUM_ENCODER_LAYERS = 6
@@ -79,7 +79,7 @@ class Config():
     ###########
     # Dataset #
     ###########
-    NUM_WORKERS = 4
+    NUM_WORKERS = 12
     COCO_PATH = "/home/jure/datasets/COCO/images"
     AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
     GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"

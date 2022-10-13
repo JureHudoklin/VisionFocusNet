@@ -11,6 +11,7 @@ from data_generator.coco import get_coco_data_generator#, build_dataset
 from data_generator.AVD import build_AVD_dataset, get_avd_data_generator
 from data_generator.GMU_kitchens import build_GMU_dataset, get_gmu_data_generator
 from data_generator.Objects365 import build_365_dataset, get_365_data_generator
+from data_generator.mixed_generator import get_concat_dataset
 from data_generator.transforms import DeNormalize
 from util.data_utils import display_data
 from configs.vision_focusnet_config import Config
@@ -23,6 +24,27 @@ from models.template_encoder import build_resnet_template_encoder
 if __name__ == "__main__":
     cfg = Config()
     denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    
+    # a = [5, 10, 79, 28, 94, 96, 18, 21, 50, 12, 14]
+    # test = [8, 29, 16, 11, 15, 9, 3, 7, 24, 26, 2, 32, 19, 20, 25, 1, 23, 4, 13, 17, 6, 31, 27, 22, 30]
+    # train = [18, 21, 28, 5, 14, 12, 10]
+    # b = [8, 18, 21, 29, 28, 16, 11, 15, 5, 9, 3, 7, 24, 26, 2, 14, 12, 32, 19, 20, 10, 25, 1, 23, 4, 13, 17, 6, 31, 27, 22, 30]
+    # all_ids = a + b
+    # # Unique
+    # unique_ids = list(set(all_ids))
+    # import random
+    # val_samples = random.sample(unique_ids, len(unique_ids)//2)
+    # print(val_samples)
+    # test = []
+    # for el in b:
+    #     if el in train:
+    #         continue
+    #     else:
+    #         test.append(el)
+            
+    # print(test)
+    # exit()
+    
     # import PIL
     # img = PIL.Image.open("/home/jure/datasets/Objects365/data/images/train/objects365_v1_00262750.jpg")
     # plt.imshow(img)
@@ -37,18 +59,19 @@ if __name__ == "__main__":
     # plt.savefig("asd.png")
  
     # Test data loader
-    if False:
+    if True:
         
-        train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
+        #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
+        train_data_loader, test_data_loader = get_365_data_generator(cfg)
         i = 0
         
         data = next(iter(train_data_loader))
-
         display_data(data)
+
         
-    if True:
+    if False:
         
-        train_data_loader, test_data_loader = get_365_data_generator(cfg)
+        train_data_loader, test_data_loader = get_concat_dataset(cfg)
         i = 0
         for i, data in enumerate(train_data_loader):
             if i%100 == 0:
