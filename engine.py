@@ -70,7 +70,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
                 writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
                 plt.close(fig)
                 
-            if batch % 10000 == 0:
+            if batch % 5000 == 0:
                 torch.cuda.empty_cache()
                 save_model(model, optimizer, epoch, save_dir, name = "intermediate")
 

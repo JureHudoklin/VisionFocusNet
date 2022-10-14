@@ -30,6 +30,7 @@ class FocusTransformerLayer(nn.Module):
         self.dim_feedforward = dim_feedforward
         self.attention_querries = attention_querries
         self.mha = [nn.MultiheadAttention(d_model, nhead, dropout=dropout, need_weights=True) for _ in range(feature_layers)]
+        self.up = [nn.Upsample(scale_factor=2, mode="nearest") for _ in range(feature_layers)]
         
         self.querry = nn.Embedding(attention_querries, d_model)
         
@@ -47,6 +48,8 @@ class FocusTransformerLayer(nn.Module):
                 src_key_padding_mask: Optional[List[Tensor]] = None,
                 pos: Optional[List[Tensor]] = None): # [Q, B, C]
         
+        aq = self.attention_querries
+        
         q = k = self.with_pos_embed(src, pos)
         
         attention_weights = []
@@ -60,10 +63,15 @@ class FocusTransformerLayer(nn.Module):
             src_key_padding_mask = src_key_padding_mask[i] if src_key_padding_mask is not None else None
 
             if len(attention_weights) == 0:
-                val, attn_weights = mha(q, k, src, attn_mask=attn_mask, key_padding_mask=src_key_padding_mask) # [Q, B, C], [B, Q, Q]
-                attention_weights.append(attn_weights[:, -4:, :-4])
+                val, attn_weights = mha(q, k, src, attn_mask=attn_mask, key_padding_mask=src_key_padding_mask) # [Q+1, B, C], [B, Q, Q]
+                val = val[:-aq] # [Q, B, C]
+                attention_weights.append(attn_weights[:, -aq:, :-aq])
                 continue
             
-            att
+            weights = attention_weights[-1] # [B, 4, Q]
+            q_len = q.shape[0]
+            max_w_idx, _ = torch.topk(weights, k=q_len//4, dim=2) # [B, 4, Q//4]
+            max_w_bool = torch.zeros_like(weights).bool() # [B, 4, Q]
+            max_w_bool.scatter_(2, max_w_idx, True) # [B, 4, Q]
             
             
