@@ -87,7 +87,7 @@ class Transformer(nn.Module):
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
         src_pos_embed = src_pos_embed.flatten(2).permute(2, 0, 1) # HWxNxC
-        src_mask = src_mask.flatten(1)        
+        src_mask = src_mask.flatten(1) # HWxN        
         memory = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed)
 
 

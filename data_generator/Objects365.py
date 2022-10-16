@@ -32,6 +32,9 @@ class Objects365Loader():
         self.prepare = Format365()
         
         self.dataset = self._load_dataset(self.labels_dir)
+        
+        
+        self.fail_save = self.__getitem__(0)
 
     def _load_dataset(self, ann_file):
         files = os.scandir(ann_file)
@@ -58,39 +61,44 @@ class Objects365Loader():
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        file = self.dataset[idx]
-        file = file.decode("utf-8")
-        img_name = file.split(".")[0]
-        img_path = os.path.join(self.image_dir, img_name + ".jpg")
-        ann_path = os.path.join(self.labels_dir, file)
-        img_id = int(img_name.split("_")[-1])
-        with PIL.Image.open(img_path) as img:
-            img.load()
+        try:
+            file = self.dataset[idx]
+            file = file.decode("utf-8")
+            img_name = file.split(".")[0]
+            img_path = os.path.join(self.image_dir, img_name + ".jpg")
+            ann_path = os.path.join(self.labels_dir, file)
+            img_id = int(img_name.split("_")[-1])
+            with PIL.Image.open(img_path) as img:
+                img.load()
 
-        with open(ann_path, 'r') as f:
-            annotations = f.readlines()
+            with open(ann_path, 'r') as f:
+                annotations = f.readlines()
+                
+            target = self._format_annotation(annotations, img)
+            target["image_id"] = img_id
             
-        target = self._format_annotation(annotations, img)
-        target["image_id"] = img_id
+            img, tgt_img, target = self.prepare(img, target)
+            if tgt_img is None:
+                tgt_img = torch.zeros(3, 224, 224)
+                tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
+                new_target = Target()
+                new_target.update(**{"size" : target["size"], "image_id" : target["image_id"], "orig_size" : target["orig_size"]})
+                new_target["sim_labels"] = torch.zeros_like(new_target["labels"])
+                target = new_target
+                
+            if self._transforms is not None:
+                img, target = self._transforms(img, target)
+            if self._tgt_transforms is not None:
+                w, h = tgt_img.size
+                tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.as_tensor([h, w]), "orig_size" : torch.as_tensor([h, w])}))
+                
+            target.make_valid()
+            target = target.as_dict
+            return img, tgt_img, target
         
-        img, tgt_img, target = self.prepare(img, target)
-        if tgt_img is None:
-            tgt_img = torch.zeros(3, 224, 224)
-            tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
-            new_target = Target()
-            new_target.update(**{"size" : target["size"], "image_id" : target["image_id"], "orig_size" : target["orig_size"]})
-            new_target["sim_labels"] = torch.zeros_like(new_target["labels"])
-            target = new_target
-            
-        if self._transforms is not None:
-            img, target = self._transforms(img, target)
-        if self._tgt_transforms is not None:
-            w, h = tgt_img.size
-            tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.as_tensor([h, w]), "orig_size" : torch.as_tensor([h, w])}))
-            
-        target.make_valid()
-        target = target.as_dict
-        return img, tgt_img, target
+        except:
+            print("Fail to load image: ", idx)
+            return self.fail_save
         # except:
         #     print("Error in file: ", file)
         #     img = torchvision.transforms.ToPILImage()(torch.zeros(3, 224, 224))
@@ -215,8 +223,10 @@ def get_365_data_generator(args):
         sampler_train, args.BATCH_SIZE, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
-                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS)
+                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS,
+                                   pin_memory=True)
     data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
-                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS)
+                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS,
+                                   pin_memory=True)
     
     return data_loader_train, data_loader_val

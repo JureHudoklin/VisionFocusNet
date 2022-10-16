@@ -43,24 +43,44 @@ class FocusTransformerLayer(nn.Module):
         return out
     
     def forward(self,
-                src: List[Tensor], # [Q, B, C]
+                src: List[Tensor], # [B, C, H, W]
                 attn_mask: Optional[List[Tensor]] = None,
-                src_key_padding_mask: Optional[List[Tensor]] = None,
-                pos: Optional[List[Tensor]] = None): # [Q, B, C]
+                src_key_padding_mask: Optional[List[Tensor]] = None, # [BS, Q]
+                pos: Optional[List[Tensor]] = None):  # [B, C, H, W]
         
-        aq = self.attention_querries
+        aq = self.querry.weight # [N_Q, C]
         
         q = k = self.with_pos_embed(src, pos)
         
         attention_weights = []
         for i in range(self.feature_layers):
             mha = self.mha[i]
-            q, k, src = q[i], k[i], src[i] # [Q, B, C]
-            att_query = self.querry.weight # [4, C]
-            att_query = att_query.unsqueeze(1).repeat(1, src.shape[1], 1) # [4, B, C]
+            q, k, src = q[i], k[i], src[i] # [B, C, H, W]
+            attn_mask_ = attn_mask[i] if attn_mask is not None else None 
+            src_key_padding_mask_ = src_key_padding_mask[i] if src_key_padding_mask is not None else None # [BS, Q]
+
+            b, c, h, w = q.shape
+            q_num = h//2*w//2
+            
+            att_query = aq.repeat(b, 1, 1) # [B, N_Q, C]
+            src_key_padding_mask_ = torch.cat([src_key_padding_mask_,
+                                               torch.zeros(b, 
+                                                           self.attention_querries,
+                                                           device=src_key_padding_mask_.device,
+                                                           dtype=src_key_padding_mask_.dtype)], dim=1)  # [B, N+N_Q]
+
+            attn_weights = attention_weights[-1] # [B, N, H/2, W/2] if i > 0 else None
+            attn_weights = self.up[i](attn_weights) if attn_weights is not None else None # [B, N, H, W]
+            max_w_idx, _ = torch.topk(attn_weights.view(b, self.attention_querries, -1), k=q_num, dim=-1).view(b, self.attention_querries, h, w) # [B, N_Q, H, W]
+            q = torch.gather(q, dim=2, index=max_w_idx) # [B, N_Q, H, W]
+
+            if len(attention_weights) == 0:
+                pass
+            
+            
+            mha_val, mha_weights = mha(att_query, q, k, attn_mask=attn_mask_, key_padding_mask=src_key_padding_mask_)
+            
             q = torch.cat([q, att_query], dim=0) # [Q+4, B, C]
-            attn_mask = attn_mask[i] if attn_mask is not None else None
-            src_key_padding_mask = src_key_padding_mask[i] if src_key_padding_mask is not None else None
 
             if len(attention_weights) == 0:
                 val, attn_weights = mha(q, k, src, attn_mask=attn_mask, key_padding_mask=src_key_padding_mask) # [Q+1, B, C], [B, Q, Q]

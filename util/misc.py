@@ -33,6 +33,16 @@ class NestedTensor(object):
         else:
             cast_mask = None
         return NestedTensor(cast_tensor, cast_mask)
+    
+    def cuda(self, non_blocking=False):
+        cast_tensor = self.tensors.cuda(non_blocking=non_blocking)
+        mask = self.mask
+        if mask is not None:
+            assert mask is not None
+            cast_mask = mask.cuda(non_blocking=non_blocking)
+        else:
+            cast_mask = None
+        return NestedTensor(cast_tensor, cast_mask)
 
     def decompose(self):
         return self.tensors, self.mask

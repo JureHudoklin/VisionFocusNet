@@ -26,7 +26,8 @@ def main(args):
     # Set Device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     device = torch.device("cuda:0")
-    
+   
+   
     # fix the seed for reproducibility
     seed = 42
     torch.manual_seed(seed)
@@ -36,7 +37,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "objects365_2"
+        date = "debug"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
