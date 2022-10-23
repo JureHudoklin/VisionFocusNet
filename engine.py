@@ -22,6 +22,8 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
     start_time = time.time()
     
     for samples, tgt_imgs, targets in data_loader:
+        #with torch.autograd.set_detect_anomaly(True):
+
         samples = samples.cuda(non_blocking=True)
         tgt_imgs = tgt_imgs.cuda(non_blocking=True)
         targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
@@ -36,9 +38,8 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
         loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
         
         losses = loss_matching + loss_dn
-       
+    
         optimizer.zero_grad(set_to_none=True)
-        #with torch.autograd.set_detect_anomaly(True):
         losses.backward()
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
@@ -93,7 +94,6 @@ def evaluate(model, criterion, postprocessor, data_loader, base_ds, device, epoc
             ### BASIC EVAL ###
             samples = samples.to(device)
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-            
             outputs = model(samples)
             
             loss_dict, stats_dict = criterion(outputs, targets)

@@ -13,7 +13,7 @@ class Config():
     WEIGHT_DECAY = 0.0001 
     LR_DROP = 25 # Drop LR after X epochs
     
-    BATCH_SIZE = 14
+    BATCH_SIZE = 12
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -43,6 +43,7 @@ class Config():
     N_HEADS = 8
     
     NUM_QUERIES = 100 # Num of object queries
+    TWO_STAGE = True
     D_MODEL = 256
     DIM_FEEDFORWARD = 2048
     NUM_ENCODER_LAYERS = 6
@@ -50,12 +51,13 @@ class Config():
     ACTIVATION = 'prelu'
     QUERY_SCALE_TYPE = 'cond_elewise' # 'cond_scalar'
     MODULATE_HW_ATTN = True
+    LOOK_FORWARD_TWICE = True
     
     ####################
     # Template Encoder #
     ####################
     TEMPLATE_ENCODER = {
-        "LR" : 0.000005,
+        "LR" : 5e-6,
         "PRETRAINED" : True,
     }
     
@@ -79,7 +81,7 @@ class Config():
     ###########
     # Dataset #
     ###########
-    NUM_WORKERS = 12
+    NUM_WORKERS = 6
     COCO_PATH = "/home/jure/datasets/COCO/images"
     AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
     GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"

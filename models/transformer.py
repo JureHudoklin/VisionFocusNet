@@ -40,6 +40,8 @@ class Transformer(nn.Module):
                  query_scale_type='cond_elewise',
                  modulate_hw_attn=True,
                  bbox_embed_diff_each_layer=False,
+                 two_stage=False,
+                 look_forward_twice= False,
                  ):
 
         super().__init__()
@@ -55,10 +57,17 @@ class Transformer(nn.Module):
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                           d_model=d_model, query_dim=query_dim, query_scale_type=query_scale_type,
                                           modulate_hw_attn=modulate_hw_attn,
-                                          bbox_embed_diff_each_layer=bbox_embed_diff_each_layer)
+                                          bbox_embed_diff_each_layer=bbox_embed_diff_each_layer,
+                                          look_forward_twice=look_forward_twice,)
 
         #self._reset_parameters()
         assert query_scale_type in ['cond_elewise', 'cond_scalar']
+        
+        self.two_stage = two_stage
+        if two_stage:
+            self.enc_output = nn.Linear(d_model, d_model)
+            self.enc_output_norm = nn.LayerNorm(d_model)
+            self.enc_output_proposals = nn.Linear(d_model, 1)
 
         self.d_model = d_model
         self.nhead = nhead
@@ -73,6 +82,41 @@ class Transformer(nn.Module):
                 
         nn.init.constant_(self.decoder.bbox_embed.layers[-1].weight.data, 0)
         nn.init.constant_(self.decoder.bbox_embed.layers[-1].bias.data, 0)
+        
+        
+    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
+        """
+        memory : Tensor [HW, B, C]
+        memory_padding_mask : Tensor [B, HW]
+        spatial_shapes : tuple(H, W)
+        """
+        S, B, C = memory.shape
+        H, W = spatial_shapes
+        _cur = 0
+        lvl = 0
+        
+        mask_flatten_ = memory_padding_mask.view(B, H, W, 1) # # B, H, W, 1
+        valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1) # True: valid, False: invalid N, H
+        valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1) # True: valid, False: invalid N, W
+        grid_y, grid_x = torch.meshgrid(torch.linspace(0, H - 1, H, dtype=torch.float32, device=memory.device),
+                                            torch.linspace(0, W - 1, W, dtype=torch.float32, device=memory.device)) # H, W
+        grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # H, W, 2
+
+        scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(B, 1, 1, 2) # N, 1, 1, 2
+        grid = (grid.unsqueeze(0).expand(B, -1, -1, -1) + 0.5) / scale # N, H, W, 2
+        wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl) # N, H, W, 2
+        output_proposals = torch.cat((grid, wh), -1).view(B, -1, 4) # N, H*W, 4
+        
+        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True) # N, H*W, 1
+        output_proposals = torch.log(output_proposals / (1 - output_proposals))
+        output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
+        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf')) # N, H*W, 4
+     
+        output_memory = memory
+        output_memory = output_memory.masked_fill(memory_padding_mask.permute(1, 0).unsqueeze(-1), float(0)) # HW, B, C
+        output_memory = output_memory.masked_fill(~output_proposals_valid.permute(1, 0, 2), float(0))
+        output_memory = self.enc_output_norm(self.enc_output(output_memory))
+        return output_memory, output_proposals
 
     def forward(self, 
                 src: Tensor, # [B, C, H, W]
@@ -87,9 +131,22 @@ class Transformer(nn.Module):
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
         src_pos_embed = src_pos_embed.flatten(2).permute(2, 0, 1) # HWxNxC
-        src_mask = src_mask.flatten(1) # HWxN        
+        src_mask = src_mask.flatten(1) # BxHW        
         memory = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed)
-
+        
+        if self.two_stage:
+            output_memory, output_proposals = self.gen_encoder_output_proposals(memory, src_mask, (h, w)) # HW, B, C,-- N, H*W, 4
+            output_proposals = output_proposals.permute(1, 0, 2) # HW, B, 4
+            
+            # Get top proposals
+            output_memory = self.enc_output_proposals(output_memory).squeeze(-1) # HW, B
+            topk = self.num_queries
+            output_prop_topk, output_prop_topk_idx = torch.topk(output_memory, topk, dim=0) # topk, B
+            
+            # Get top proposals topk, B, 4
+            output_proposals = torch.gather(output_proposals, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, 4))
+            tgt_point_embed[-topk:, :, :] = output_proposals # topk, B, 4
+            
 
         hs, references = self.decoder(tgt_label_embed, memory, memory_key_padding_mask=src_mask,
                           pos=src_pos_embed, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
@@ -180,6 +237,7 @@ class TransformerDecoder(nn.Module):
                  query_scale_type='cond_elewise',
                  modulate_hw_attn=True, # !!!
                  bbox_embed_diff_each_layer=False, # !!!
+                 look_forward_twice=False, # !!!
                  ):
         super().__init__()
         
@@ -192,25 +250,27 @@ class TransformerDecoder(nn.Module):
 
         assert query_scale_type in ['cond_elewise', 'cond_scalar']
         self.query_scale_type = query_scale_type
-        if query_scale_type == 'cond_elewise':
-            self.query_scale = MLP(d_model, d_model, d_model, 2)
-        elif query_scale_type == 'cond_scalar':
-            self.query_scale = MLP(d_model, d_model, 1, 2)
-        else:
-            raise NotImplementedError("Unknown query_scale_type: {}".format(query_scale_type))
+        
+        self.look_forward_twice = look_forward_twice
         
         self.ref_point_head = MLP(d_model*2, d_model, d_model, 2)
         
         self.bbox_embed =  MLP(d_model, d_model, 4, 3)
-        #nn.init.constant_(self.decoder.bbox_embed.layers[-1].weight.data, 0)
-        #nn.init.constant_(self.decoder.bbox_embed.layers[-1].bias.data, 0)
         
-        self.modulate_hw_attn = modulate_hw_attn
+        
         self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
 
         self.gen_sineembed = PositionEmbeddingSineChannel(d_model//2) # temperature=20
 
+        self.modulate_hw_attn = modulate_hw_attn
         if modulate_hw_attn:
+            if query_scale_type == 'cond_elewise':
+                self.query_scale = MLP(d_model, d_model, d_model, 2)
+            elif query_scale_type == 'cond_scalar':
+                self.query_scale = MLP(d_model, d_model, 1, 2)
+            else:
+                raise NotImplementedError("Unknown query_scale_type: {}".format(query_scale_type))
+            
             self.ref_anchor_head = MLP(d_model, d_model, 2, 2)
 
 
@@ -227,28 +287,29 @@ class TransformerDecoder(nn.Module):
         output = tgt
         reference_points = reference_unsigmoid.sigmoid()
         intermediate = []
-        ref_point_layers = [reference_points]
-
-        # import ipdb; ipdb.set_trace()        
+        ref_point_layers = [reference_points] #reference_points
+        
+        a = reference_points
+        a_ = reference_points
 
         for layer_id, layer in enumerate(self.layers):
-            obj_center = reference_points[..., :2]     # [num_queries, batch_size, 2] cx, cy
-            obj_size = reference_points[..., 2:]       # [num_queries, batch_size, 2] w, h
+            obj_center = a[..., :2]     # [num_queries, batch_size, 2] cx, cy
+            obj_size = a[..., 2:]       # [num_queries, batch_size, 2] w, h
             # get sine embedding for the query vector
-            query_sine_embed = self.gen_sineembed(reference_points) # [nq, bs, d_model] cx, cy, w, h
+            query_sine_embed = self.gen_sineembed(a) # [nq, bs, d_model] cx, cy, w, h
             query_pos = self.ref_point_head(query_sine_embed) # [num_queries, batch_size, d_model]
             query_sine_embed = query_sine_embed[...,:self.d_model]
             
-            if layer_id == 0:
-                pos_transformation = 1
-            else:
-                pos_transformation = self.query_scale(output)
-
-            # # apply transformation
-            query_sine_embed = query_sine_embed * pos_transformation
-
-            # # modulated HW attentions
             if self.modulate_hw_attn:
+                if layer_id == 0:
+                    pos_transformation = 1
+                else:
+                    pos_transformation = self.query_scale(output)
+
+                # apply transformation
+                query_sine_embed = query_sine_embed * pos_transformation
+
+                # modulated HW attentions
                 refHW_cond = self.ref_anchor_head(output).sigmoid() # nq, bs, 2
                 query_sine_embed[..., self.d_model // 2:] *= (refHW_cond[..., 0] / obj_size[..., 0]).unsqueeze(-1)
                 query_sine_embed[..., :self.d_model // 2] *= (refHW_cond[..., 1] / obj_size[..., 1]).unsqueeze(-1)
@@ -266,21 +327,26 @@ class TransformerDecoder(nn.Module):
 
             # iter update
             if self.bbox_embed_diff_each_layer:
-                tmp = self.bbox_embed[layer_id](output)
+                db = self.bbox_embed[layer_id](output) # Delta d_i
             else:
-                tmp = self.bbox_embed(output)
-            tmp += inverse_sigmoid(reference_points)
-            new_reference_points = tmp.sigmoid() # [num_queries, batch_size, query_dim]
-            if layer_id != self.num_layers - 1:
-                ref_point_layers.append(new_reference_points)
-            reference_points = new_reference_points.detach()
+                db = self.bbox_embed(output)
+                
+            if self.look_forward_twice:
+                b_ = (inverse_sigmoid(a) + db).sigmoid()
+                b = b_.detach()
+                b_pred = (inverse_sigmoid(a_) + db).sigmoid()
+                ref_point_layers.append(b_pred)
+                a = b
+                a_ = b_      
+            else:
+                b_pred = (inverse_sigmoid(a) + db).sigmoid()
+                b = b_pred.detach()
+                ref_point_layers.append(b_pred)
+                a = b
 
+            
             intermediate.append(self.norm(output))
 
-        # if self.norm is not None:
-        #     output = self.norm(output)
-        #     intermediate.pop()
-        #     intermediate.append(output)
 
         if self.bbox_embed is not None:
             return [
@@ -426,6 +492,8 @@ def build_transformer(args):
         query_dim=4,
         query_scale_type=args.QUERY_SCALE_TYPE,
         modulate_hw_attn=args.MODULATE_HW_ATTN,
-        bbox_embed_diff_each_layer = False
+        bbox_embed_diff_each_layer = False,
+        two_stage=args.TWO_STAGE,
+        look_forward_twice=args.LOOK_FORWARD_TWICE,
     )
 

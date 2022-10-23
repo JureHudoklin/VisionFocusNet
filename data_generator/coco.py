@@ -14,6 +14,7 @@ import data_generator.transforms as T
 import data_generator.sltransforms as ST
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
+from util.data_utils import make_base_transforms, make_tgtimg_transforms, Target
 
 class CocoLoader(torchvision.datasets.CocoDetection):
     """`MS Coco Detection <http://mscoco.org/dataset/#detections-challenge2016>`_ Dataset.
@@ -104,7 +105,7 @@ def build_dataset(image_set, args):
         "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/instances_val2017.json")),
     }
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoLoader(img_folder, ann_file, transforms=make_coco_transforms(image_set), tgt_transforms = make_tgtimg_transforms())
+    dataset = CocoLoader(img_folder, ann_file, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms(image_set))
     return dataset
 
 def get_coco_data_generator(args):
@@ -168,12 +169,13 @@ class CocoFormat(object):
     def prepare_base_labels(self, image, target):
         w, h = image.size
 
+        target_new = Target()
+
         image_id = target["image_id"]
-        image_id = torch.tensor([image_id])
+        target["image_id"] = torch.tensor([image_id])
 
 
         anno = target["annotations"]
-
         anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
 
         boxes = [obj["bbox"] for obj in anno]
@@ -194,22 +196,17 @@ class CocoFormat(object):
             
 
         target = {}
-        target["boxes"] = boxes
-        target["labels"] = classes
+        target_new["boxes"] = boxes
+        target_new["labels"] = classes
+        target_new.calc_area()
+        target_new.calc_iscrowd()
+        target_new["orig_size"] = torch.as_tensor([int(h), int(w)])
+        target_new["size"] = torch.as_tensor([int(h), int(w)])
     
-        # for conversion to coco api
-        area = torch.tensor([obj["area"] for obj in anno])
-        iscrowd = torch.tensor([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno])
-        target["area"] = area[keep]
-        target["iscrowd"] = iscrowd[keep]
-
-        target["orig_size"] = torch.as_tensor([int(h), int(w)])
-        target["size"] = torch.as_tensor([int(h), int(w)])
-        target["image_id"] = image_id
-
-        return image, target
+        return image, target_new
 
     def prepare_target_img(self, image, target, area_limit = 600):
+        assert isinstance(target, Target)
         labels = target["labels"]
         unique_labels = torch.unique(labels)
         unique_labels_list = unique_labels.tolist()
@@ -231,28 +228,21 @@ class CocoFormat(object):
             return image, None, None
 
         # Get all labels of the same class
-        new_target = {}
-        new_target["boxes"] = target["boxes"][same_class_idx]
-        new_target["class_ids"] = target["labels"][same_class_idx]
-        new_target["labels"] = torch.ones_like(new_target["class_ids"])
-        new_target["area"] = target["area"][same_class_idx]
-        new_target["iscrowd"] = target["iscrowd"][same_class_idx]
-        new_target["orig_size"] = target["orig_size"]
-        new_target["size"] = target["size"]
+        target.filter(same_class_idx)
         
         # Set similarity indices:
         similarity_idx = torch.zeros_like(labels)
         similarity_idx[max_area_idx] = 1
         if class_id in self.same_classes:
             similarity_idx[:] = 1
-        new_target["sim_labels"] = similarity_idx[same_class_idx]
+        target["sim_labels"] = similarity_idx[same_class_idx]
 
 
-        tgt_box = new_target["boxes"][max_area_idx]
+        tgt_box = target["boxes"][max_area_idx]
         tgt_box_int = tgt_box.int()
         tgt_image = image.crop(tgt_box_int.tolist())
         
-        return image, tgt_image, new_target
+        return image, tgt_image, target
        
     
 
@@ -263,65 +253,3 @@ class CocoFormat(object):
         image, tgt_image, target = self.prepare_target_img(image, target)
         return image, tgt_image, target
 
-def make_coco_transforms(image_set):
-
-    normalize = T.Compose([
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-
-    scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
-
-    if image_set == 'train':
-        return T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomSelect(
-                T.RandomResize(scales, max_size=1333),
-                T.Compose([
-                    T.RandomResize([400, 500, 600]),
-                    T.RandomSizeCrop(384, 600),
-                    T.RandomResize(scales, max_size=1333),
-                ])
-            ),
-            normalize,
-        ])
-
-    if image_set == 'val':
-        return T.Compose([
-            normalize,
-        ])
-
-    raise ValueError(f'unknown {image_set}')
-
-def make_tgtimg_transforms():
-    normalize = T.Compose([
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    return T.Compose([
-        # T.RandomSelect(
-        #     T.RandomRotate(),
-        #     ),
-        T.Resize(224, max_size=448),
-        T.RandomHorizontalFlip(),
-
-        ST.RandomSelectMulti([
-            ST.AdjustBrightness(0.8, 1.5),
-            ST.AdjustContrast(0.8, 1.5),
-            #ST.LightingNoise(),
-            T.NoTransform(),
-        ]),
-        normalize,
-    ])
-
-
-if __name__ == "__main__":
-    coco = CocoLoader_v2(img_dir='/home/jure/datasets/COCO/images/val2017', 
-                         ann_file='/home/jure/datasets/COCO/annotations/annotations_trainval2017/annotations/instances_val2017.json',
-                         transforms = make_coco_transforms('val'),
-                         )
-    
-    data = coco[12]
-    print(data)
-    
-    exit()

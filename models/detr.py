@@ -31,7 +31,11 @@ class DETR(nn.Module):
     def __init__(self, backbone,
                  transformer,
                  template_encoder,
-                 num_classes, num_queries, aux_loss, dn_args: dict = None):
+                 num_classes,
+                 num_queries,
+                 aux_loss,
+                 two_stage = False,
+                 dn_args: dict = None):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -49,7 +53,10 @@ class DETR(nn.Module):
         self.sim_embed = nn.Linear(self.hidden_dim, 1)
         
         #self.bbox_embed = MLP(self.hidden_dim, self.hidden_dim, 4, 3)
+        self.two_stage = two_stage
         self.refpoint_embed = nn.Embedding(num_queries, 4)
+        if self.two_stage:
+            self.refpoint_embed.requires_grad = False
                
         self.label_enc = nn.Embedding(3, self.hidden_dim)
         self.num_classes = num_classes
@@ -128,7 +135,9 @@ class DETR(nn.Module):
         # Transformer #
         ###############
         bs = src.shape[0]
+
         ref_points_unsigmoid = self.refpoint_embed.weight # [num_queries, 4]
+            
         # prepare for DN
         input_query_label, input_query_bbox, attn_mask, mask_dict = \
             prepare_for_dn(targets,
@@ -159,7 +168,7 @@ class DETR(nn.Module):
         # DB post processing
         outputs_class, output_sim, outputs_coord, mask_dict = dn_post_process(outputs_class, output_sim, outputs_coord, mask_dict)
         
-        out = {"pred_class_logits": outputs_class[-1], "pred_sim_logits": output_sim[-1], "pred_boxes": outputs_coord[-1], "mask_dict": mask_dict}
+        out = {"pred_class_logits": outputs_class[-1], "pred_sim_logits": output_sim[-1], "pred_boxes": outputs_coord[-1], "matching_boxes": outputs_coord[-2], "mask_dict": mask_dict}
         
         if self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss(outputs_class, output_sim, outputs_coord)
@@ -170,8 +179,8 @@ class DETR(nn.Module):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn"t support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{"pred_class_logits": a, "pred_sim_logits": b, "pred_boxes": c}
-                for a, b, c  in zip(outputs_class[:-1], output_sim[:-1], outputs_coord[:-1])]
+        return [{"pred_class_logits": a, "pred_sim_logits": b, "pred_boxes": c, "matching_boxes": d}
+                for a, b, c, d  in zip(outputs_class[:-1], output_sim[:-1], outputs_coord[1:-1], outputs_coord[0:-2])]
 
 
 
@@ -489,6 +498,7 @@ def build_model(args, device):
         num_queries=args.NUM_QUERIES,
         aux_loss=args.AUX_LOSS,
         dn_args=args.DN_ARGS,
+        two_stage=args.TWO_STAGE,
     )
 
     # Regular Loss Weights
