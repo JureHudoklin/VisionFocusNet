@@ -6,7 +6,8 @@ import math
 from re import T, template
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import Tensor, nn
+from torch.utils import checkpoint
 
 from torchvision.ops import generalized_box_iou, box_convert
 
@@ -20,6 +21,7 @@ from .backbone import build_backbone
 from .transformer import build_transformer
 from .template_encoder import build_template_encoder, build_resnet_template_encoder
 from .layer_util import MLP, inverse_sigmoid
+from .feature_alignment import TemplateFeatAligner
 from loses.sigmoid_focal_loss import sigmoid_focal_loss, focal_loss, FocalLoss
 
 from loses.hungarian_matcher import build_matcher
@@ -60,14 +62,13 @@ class DETR(nn.Module):
                
         self.label_enc = nn.Embedding(3, self.hidden_dim)
         self.num_classes = num_classes
-        
         self.input_proj = nn.Conv2d(backbone.num_channels, self.hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss 
         
         self.template_encoder = template_encoder
         self.template_proj = nn.Linear(template_encoder.out_channels, self.hidden_dim)
-
+        #self.template_aligner = TemplateFeatAligner(self.hidden_dim)
         
         # init prior_prob setting for focal loss
         #prior_prob = 0.01
@@ -121,15 +122,19 @@ class DETR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
+        bs, c, h, w = src.shape
         
         #####################
         # Template Encoding #
         #####################
-        obj_enc = self.template_encoder(samples_targets)
-        obj_enc = obj_enc.decompose()[0] # [BS, C]
-        obj_enc = self.template_proj(obj_enc)# + self.label_enc(torch.tensor(2).cuda()) # [BS, C]
-        ref_tgt = obj_enc.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
-        ref_tgt = ref_tgt.permute(1, 0, 2) # [NQ, BS, C]
+        samples_targets, _ = samples_targets.decompose()
+        obj_enc: torch.Tensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
+        # obj_enc = self.template_encoder(samples_targets) # [BS*num_tgts, C]
+        # obj_enc = obj_enc.decompose()[0] # [BS*num_tgts, C]
+        obj_enc = self.template_proj(obj_enc)# [BS*num_tgts, C]
+        ref_placeholder = torch.zeros((bs, c), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
+        ref_placeholder = ref_placeholder.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
+        ref_placeholder = ref_placeholder.permute(1, 0, 2) # [NQ, BS, C]
         
         ###############
         # Transformer #
@@ -143,19 +148,22 @@ class DETR(nn.Module):
             prepare_for_dn(targets,
                            self.dn_args,
                            ref_points_unsigmoid,
-                           ref_tgt,
+                           ref_placeholder,
                            bs,
                            self.training,
                            self.hidden_dim,
                            self.label_enc,
             )
+            
+        
 
         hs, reference_pts_layers = self.transformer(src = self.input_proj(src),
                                                     src_pos_embed = pos,
                                                     src_mask = mask,
                                                     tgt_point_embed = input_query_bbox,
                                                     tgt_label_embed = input_query_label,
-                                                    tgt_attn_mask = attn_mask
+                                                    tgt_attn_mask = attn_mask,
+                                                    tgts = obj_enc,
                                                     ) # hs: [num_layers, bs, num_queries, hidden_dim], reference_pts_layers: [num_layers, bs, num_queries, 4]
 
         ###########
@@ -191,7 +199,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, dn_args, focal_alpha, losses):
+    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, dn_args, focal_alpha, batch_size, losses):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -209,8 +217,9 @@ class SetCriterion(nn.Module):
         self.focal_alpha = focal_alpha
         self.losses = losses
         self.stats = {}
+        self.bs = batch_size
         
-        self.dn_loss = DnLoss()
+        self.dn_loss = DnLoss(batch_size=self.bs)
         
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
@@ -288,7 +297,7 @@ class SetCriterion(nn.Module):
        # print(outputs_logits[idx].shape, target_classes_o.shape)
         loss_sim = focal_loss(outputs_logits[idx], target_classes_o, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
         #print(loss_sim.shape)
-        loss_sim = loss_sim.sum()# / num_boxes #(loss_sim.mean(1).sum() / num_boxes) *num_boxes
+        loss_sim = loss_sim.sum() / bs # / num_boxes #(loss_sim.mean(1).sum() / num_boxes) *num_boxes
         # loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
         # loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
         # loss_sim = (loss_sim / num_boxes)* outputs_logits.shape[1]
@@ -535,6 +544,7 @@ def build_model(args, device):
                              dn_weight_dict=dn_weight_dict,
                              dn_args = args.DN_ARGS,
                              focal_alpha=args.FOCAL_ALPHA,
+                             batch_size = args.BATCH_SIZE,
                              losses=losses)
     criterion.to(device)
     

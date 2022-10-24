@@ -1,4 +1,5 @@
 from re import S
+from tkinter import E
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
@@ -50,7 +51,7 @@ def make_tgtimg_transforms(image_set):
         # T.RandomSelect(
         #     T.RandomRotate(),
         #     ),
-        T.Resize(224, max_size=448),
+        T.Resize(224, max_size=256),
         T.RandomHorizontalFlip(),
 
         ST.RandomSelectMulti([
@@ -90,13 +91,18 @@ def display_data(data):
     imgs_tgt, _ = samples_tgt.decompose()
     
     B = imgs.shape[0]
+    N_t = imgs_tgt.shape[0]//B
+    imgs_tgt = imgs_tgt.reshape(B, N_t, 3, imgs_tgt.shape[-2], imgs_tgt.shape[-1])
     denormalize = T.DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
     # Create Subplots
-    fig, axs = plt.subplots(B, 2, figsize=(5, 2*B))
+    fig, axs = plt.subplots(B, 1+N_t, figsize=(6, 1*B))
+    if B == 1:
+        axs = axs.reshape(1, 1+N_t)
     
     for B_i in range(B):
         ax = axs[B_i, 0]
+        ax.axis("off")
         
         # Plot the image
         img = denormalize(imgs[B_i])
@@ -120,10 +126,12 @@ def display_data(data):
             ax.add_patch(plt.Rectangle((x, y), w, h, fill=False, edgecolor='red', linewidth=1, alpha=0.5))
             ax.text(x, y, f"ID:{obj_id:.2f}", color='red', fontsize=5)
             
-        ax = axs[B_i, 1]
-        # Plot the image
-        img = denormalize(imgs_tgt[B_i])
-        ax.imshow(img.permute(1, 2, 0))
+        for N_t_i in range(N_t):
+            ax = axs[B_i, 1+N_t_i]
+            ax.axis("off")
+            # Plot the image
+            img = denormalize(imgs_tgt[B_i, N_t_i])
+            ax.imshow(img.permute(1, 2, 0))
     
     fig.tight_layout()
     plt.savefig('dataset_visualize.png', dpi=500)
@@ -141,7 +149,7 @@ class Target():
     size : (H, W) tensor of int
     """
     def __init__(self, **kwargs):
-        self.keys = ["boxes", "labels", "sim_labels", "iscrowd", "area", "size", "orig_size", "image_id"]
+        self.keys = ["boxes", "labels", "classes", "sim_labels", "iscrowd", "area", "size", "orig_size", "image_id"]
         self.img_prop = ["size", "orig_size", "image_id", "scene"]
         self.target = {k : torch.empty(0) for k in self.keys} 
         self.target.update(kwargs)
@@ -213,6 +221,7 @@ class Target():
         
     def make_valid(self):
         self.target["labels"] = self.target["labels"].long()
+        self.target["classes"] = self.target["classes"].long()
         self.target["sim_labels"] = self.target["sim_labels"].long()
         self.target["iscrowd"] = self.target["iscrowd"].float()
         self.target["area"] = self.target["area"].float()
@@ -223,7 +232,7 @@ class Target():
     
     @property
     def is_valid(self):
-        must_include = ["boxes", "labels", "sim_labels", "size", "orig_size"]
+        must_include = ["boxes", "labels", "classes", "sim_labels", "size", "orig_size"]
         for k in must_include:
             if k not in self.target:
                 return False
@@ -236,32 +245,47 @@ class Target():
     def as_dict(self):
         return self.target
     
-def extract_tgt_img(image, boxes):
+def extract_tgt_img(image, boxes, num_imgs = 3):
     assert isinstance(image, PIL.Image.Image)
     assert isinstance(boxes, torch.Tensor)
-    if boxes.shape[0] == 1:
-        return image.copy().crop(boxes[0].int().tolist())
-    tgt_box_int = boxes.int().reshape(-1, 4)
     
-    widths = (tgt_box_int[:, 2] - tgt_box_int[:, 0])
-    heights = (tgt_box_int[:, 3] - tgt_box_int[:, 1])
-    widths_t = torch.where(widths>heights, heights, widths)
-    heights_t = torch.where(widths>heights, widths, heights)
     
-    max_w_size = max(widths_t).item()
-    max_h_size = max(heights_t).item()
-    max_h_size = max_h_size if max_h_size > max_w_size else max_w_size+1
-    img_tensor = ToTensor()(image)
-    tgt_img = torch.zeros((3, max_h_size, max_w_size*boxes.shape[0]))
-    for i, box in enumerate(tgt_box_int):
-        x1, y1, x2, y2 = box
-        tgt_i = img_tensor[:, y1:y2, x1:x2].contiguous()
-        tgt_i = tgt_i.float()
-        if tgt_i.shape[2] > tgt_i.shape[1]:
-            tgt_i = tgt_i.permute(0, 2, 1)
-            tgt_i = tgt_i.flip(2)
-        tgt_i = Resize(max_w_size, max_size = max_h_size)(tgt_i) #, max_size=max_size
-        h, w = tgt_i.shape[1:]
-        tgt_img[:, :h, i*max_w_size:i*max_w_size+w] = tgt_i
+    num_valid_boxes = boxes.shape[0]
+    out_targets = []
+    place_holder_img = ToPILImage()(torch.zeros(3, 64, 64))
+    
+    for i in range(num_imgs):
+        if i >= num_valid_boxes:
+            out_targets.append(place_holder_img)
+            continue
+        else:
+            out_targets.append(image.copy().crop(boxes[i].int().tolist()))
         
-    return ToPILImage()(tgt_img)
+    return out_targets    
+    
+    # if boxes.shape[0] == 1:
+    #     return image.copy().crop(boxes[0].int().tolist())
+    # tgt_box_int = boxes.int().reshape(-1, 4)
+    
+    # widths = (tgt_box_int[:, 2] - tgt_box_int[:, 0])
+    # heights = (tgt_box_int[:, 3] - tgt_box_int[:, 1])
+    # widths_t = torch.where(widths>heights, heights, widths)
+    # heights_t = torch.where(widths>heights, widths, heights)
+    
+    # max_w_size = max(widths_t).item()
+    # max_h_size = max(heights_t).item()
+    # max_h_size = max_h_size if max_h_size > max_w_size else max_w_size+1
+    # img_tensor = ToTensor()(image)
+    # tgt_img = torch.zeros((3, max_h_size, max_w_size*boxes.shape[0]))
+    # for i, box in enumerate(tgt_box_int):
+    #     x1, y1, x2, y2 = box
+    #     tgt_i = img_tensor[:, y1:y2, x1:x2].contiguous()
+    #     tgt_i = tgt_i.float()
+    #     if tgt_i.shape[2] > tgt_i.shape[1]:
+    #         tgt_i = tgt_i.permute(0, 2, 1)
+    #         tgt_i = tgt_i.flip(2)
+    #     tgt_i = Resize(max_w_size, max_size = max_h_size)(tgt_i) #, max_size=max_size
+    #     h, w = tgt_i.shape[1:]
+    #     tgt_img[:, :h, i*max_w_size:i*max_w_size+w] = tgt_i
+        
+    # return ToPILImage()(tgt_img)

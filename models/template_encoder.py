@@ -88,11 +88,11 @@ class DinoVits16(nn.Module):
         out : Tensor (N, C)
             Embedding of the image input.
         """
-        assert isinstance(x, NestedTensor)
-        inp, _ = x.decompose()
-        temp_feat = self.vits16(inp)
-        out = NestedTensor(temp_feat, None)
-        return out
+        #assert isinstance(x, NestedTensor)
+        #inp, _ = x.decompose()
+        temp_feat = self.vits16(x)
+        #out = NestedTensor(temp_feat, None)
+        return temp_feat
     
 
 
@@ -110,13 +110,6 @@ class BackboneBase(nn.Module):
     def forward(self, tensor_list: NestedTensor):
         xs = self.template_encoder(tensor_list.tensors)
         out = NestedTensor(xs, None)
-        return out
-        out: Dict[str, NestedTensor] = {}
-        for name, x in xs.items():
-            m = tensor_list.mask
-            assert m is not None
-            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
-            out[name] = NestedTensor(x, mask)
         return out
 
 

@@ -189,9 +189,10 @@ def dn_post_process(outputs_class, output_sim, outputs_coord, mask_dict):
 
 
 class DnLoss(nn.Module):
-    def __init__(self, focal_alpha=0.25):
+    def __init__(self, batch_size, focal_alpha=0.25):
         super(DnLoss, self).__init__()
         self.focal_alpha = focal_alpha
+        self.bs = batch_size
         
     def prepare_for_loss(self, mask_dict):
         """
@@ -207,6 +208,7 @@ class DnLoss(nn.Module):
 
         batch_idx = mask_dict['batch_idx']
         bid = batch_idx[known_indice]
+        
         if len(output_known_class) > 0: #[ls, bs, n, c] - > [bs, n, ls, c] - > [ls, n, c]
             output_known_class = output_known_class.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2) # [ls, N, 2]
             output_known_sim = output_known_sim.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2) # [ls, N, 1]
@@ -244,8 +246,9 @@ class DnLoss(nn.Module):
                 "tgt_loss_sim": torch.as_tensor(0.).to("cuda"),
                 "tgt_sim_error": torch.as_tensor(0.).to("cuda"),
             }
+        bs = out_sim.shape[0]
         loss_ce = focal_loss(out_sim.view(-1, 1), tgt_sim.view(-1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
-        loss_ce = loss_ce.sum()# / num_tgt
+        loss_ce = loss_ce.sum() / self.bs # / num_tgt
 
         losses = {"tgt_loss_sim": loss_ce}
         losses["tgt_sim_error"] = accuracy(out_sim, tgt_sim)[0]
@@ -284,6 +287,7 @@ class DnLoss(nn.Module):
             focal_alpha:  for focal loss
         """
         losses = {}
+
         if self.training and 'output_known_lbs_bboxes' in mask_dict:
             known_class_labels, known_sim_labels, known_bboxs, \
             output_known_class, output_known_sim, output_known_coord, \

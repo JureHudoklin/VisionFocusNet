@@ -2,13 +2,13 @@
 """
 Backbone modules.
 """
-from collections import OrderedDict
 
 import torch
 import torch.nn.functional as F
 import torchvision
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
+from torchvision.models.feature_extraction import create_feature_extractor
 from typing import Dict, List
 
 from util.misc import NestedTensor
@@ -56,16 +56,14 @@ class FrozenBatchNorm2d(torch.nn.Module):
 
 class BackboneBase(nn.Module):
 
-    def __init__(self, backbone: nn.Module, train_backbone: bool, num_channels: int, return_interm_layers: bool):
+    def __init__(self, backbone: nn.Module, train_backbone: bool, num_channels: int, layer_names: dict):
         super().__init__()
         for name, parameter in backbone.named_parameters():
-            if not train_backbone or "layer2" not in name and "layer3" not in name and "layer4" not in name:
+            if train_backbone:
+                parameter.requires_grad_(True)
+            else:
                 parameter.requires_grad_(False)
-        if return_interm_layers:
-            return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
-        else:
-            return_layers = {"layer4": "0"}
-        self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
+        self.body = create_feature_extractor(backbone, layer_names)
         self.num_channels = num_channels
 
     def forward(self, tensor_list: NestedTensor):
@@ -86,13 +84,28 @@ class Backbone(BackboneBase):
                  return_interm_layers: bool,
                  dilation: bool,
                  pretrained: bool = True):
+        
         if pretrained == False:
             print("---- WARN: backbone pretrained is set to False ----")
+            
+        # ResNet
+        if return_interm_layers and name in ["resnet18", "resnet34", "resnet50", "resnet101"]:
+            layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
+        
+        # EfficientNet
+        if return_interm_layers and name in ["efficientnet_b0", "efficientnet_b1", "efficientnet_b2"]:
+            layers = {'features.2': '0', 'features.3': '1', 'features.5': '2', 'features.7': '3'}
+            
+        # Get backbone   
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=pretrained, norm_layer=FrozenBatchNorm2d)
-        num_channels = 512 if name in ("resnet18", "resnet34") else 2048
-        super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
+        
+        channel_dict = {"resnet18": 512, "resnet34": 512, "resnet50": 2048, "resnet101": 2048, "efficientnet_b0": 320, "efficientnet_b1": 320, "efficientnet_b2": 352}
+        
+        num_channels = channel_dict[name] if name in channel_dict else 256
+        
+        super().__init__(backbone, train_backbone, num_channels, layers)
 
 
 class Joiner(nn.Sequential):

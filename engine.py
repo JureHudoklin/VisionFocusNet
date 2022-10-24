@@ -27,7 +27,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
         samples = samples.cuda(non_blocking=True)
         tgt_imgs = tgt_imgs.cuda(non_blocking=True)
         targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
-
+        
         outputs = model(samples, tgt_imgs, targets)
 
         
@@ -38,7 +38,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
         loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
         
         losses = loss_matching + loss_dn
-    
+
         optimizer.zero_grad(set_to_none=True)
         losses.backward()
         if max_norm > 0:
@@ -67,9 +67,10 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
                 write_summary(writer, merged, step, f"running_stats")
 
             if batch % 1000 == 0:
-                fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
-                plt.close(fig)
+                pass
+                # fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+                # writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
+                # plt.close(fig)
                 
             if batch % 5000 == 0:
                 torch.cuda.empty_cache()

@@ -99,18 +99,7 @@ class Objects365Loader():
         except:
             print("Fail to load image: ", idx)
             return self.fail_save
-        # except:
-        #     print("Error in file: ", file)
-        #     img = torchvision.transforms.ToPILImage()(torch.zeros(3, 224, 224))
-        #     tgt_img = torchvision.transforms.ToPILImage()(torch.zeros(3, 224, 224))
-        #     target = Target(**{"size": torch.as_tensor([224, 224]), "image_id": torch.tensor([0]), "orig_size": torch.as_tensor([224, 224])})
-        #     if self._transforms is not None:
-        #         img, target = self._transforms(img, target)
-        #     if self._tgt_transforms is not None:
-        #         tgt_img, _ = self._tgt_transforms(tgt_img, None)
-        #     return img, tgt_img, target
 
-        
     
     def collate_fn(self, batch):
         batch = list(zip(*batch))

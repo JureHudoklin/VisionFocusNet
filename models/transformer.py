@@ -15,6 +15,7 @@ import copy
 import os
 import torch
 import torch.nn.functional as F
+from torch.utils import checkpoint
 
 from typing import Optional, List
 
@@ -23,6 +24,7 @@ from torch import nn, Tensor
 from .position_encoding import PositionEmbeddingSineChannel
 from .attention import SimpleMultiheadAttention, MultiheadAttention_x
 from .layer_util import MLP, _get_activation_fn, _get_clones, inverse_sigmoid
+from .feature_alignment import TemplateFeatAligner
 
 
 class Transformer(nn.Module):
@@ -73,6 +75,8 @@ class Transformer(nn.Module):
         self.nhead = nhead
         self.dec_layers = num_decoder_layers
         self.num_queries = num_queries
+        
+        self.feature_alignment = TemplateFeatAligner(self.d_model)
         
 
     def _reset_parameters(self):
@@ -125,14 +129,29 @@ class Transformer(nn.Module):
                 tgt_point_embed: Tensor, # (Q, B, 4)
                 tgt_label_embed: Tensor, # (Q, B, C)
                 tgt_attn_mask: Tensor, # (Q, Q)
+                tgts: Tensor, # (BS*num_tgts, C)
     ):
                 
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
+        image_sizes =torch.stack([torch.sum(~src_mask[:, :, 0], dim=1), torch.sum(~src_mask[:, 0], dim=1)], dim=1) # N, 2
         src = src.flatten(2).permute(2, 0, 1)
         src_pos_embed = src_pos_embed.flatten(2).permute(2, 0, 1) # HWxNxC
-        src_mask = src_mask.flatten(1) # BxHW        
-        memory = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed)
+        src_mask = src_mask.flatten(1) # BxHW
+        
+        ##################
+        ### Encoder ######
+        ##################
+        memory = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed) # HWxNxC
+        
+        
+        ##################
+        ### Feature Alignment
+        ##################
+        memory_img = memory.view(h, w, bs, c).permute(2, 3, 0, 1) # NxCxHxW
+        tgts = tgts.view(-1, bs, c).permute(1, 0, 2) # N x num_tgts x C
+        aligned_tgt_label_embed = self.feature_alignment(memory_img, tgts, tgt_point_embed.sigmoid(), image_sizes)
+        
         
         if self.two_stage:
             output_memory, output_proposals = self.gen_encoder_output_proposals(memory, src_mask, (h, w)) # HW, B, C,-- N, H*W, 4
@@ -148,7 +167,7 @@ class Transformer(nn.Module):
             tgt_point_embed[-topk:, :, :] = output_proposals # topk, B, 4
             
 
-        hs, references = self.decoder(tgt_label_embed, memory, memory_key_padding_mask=src_mask,
+        hs, references = self.decoder(aligned_tgt_label_embed, memory, memory_key_padding_mask=src_mask,
                           pos=src_pos_embed, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
         return hs, references
 
@@ -160,7 +179,7 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
-        self.query_scale = MLP(d_model, d_model, d_model, 2)
+        #self.query_scale = MLP(d_model, d_model, d_model, 2)
         self.norm = norm
 
     def forward(self, src, # [num_feat, bs, C]
@@ -171,9 +190,10 @@ class TransformerEncoder(nn.Module):
 
         for layer_id, layer in enumerate(self.layers):
             # rescale the content and pos sim
-            pos_scales = self.query_scale(output) # [num_feat, bs, d_model]
-            output = layer(output, attn_mask=attn_mask,
-                           src_key_padding_mask=src_key_padding_mask, pos=pos*pos_scales)
+            #pos_scales = self.query_scale(output) # [num_feat, bs, d_model]
+            output: torch.Tensor = checkpoint.checkpoint(layer, output, attn_mask, src_key_padding_mask, pos)
+            # output = layer(output, attn_mask=attn_mask,
+            #                src_key_padding_mask=src_key_padding_mask, pos=pos) #*pos_scales
 
         if self.norm is not None:
             output = self.norm(output)

@@ -95,7 +95,7 @@ def main(args):
 
 
     ######### GET DATASET #########
-    #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+    train_data_loader, test_data_loader = get_coco_data_generator(cfg)
     base_ds = build_dataset("val", cfg)
     base_ds = get_coco_api_from_dataset(base_ds)
     
@@ -103,7 +103,7 @@ def main(args):
     #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
     
     # GMU
-    train_data_loader, test_data_loader = get_365_data_generator(cfg)
+    #train_data_loader, test_data_loader = get_365_data_generator(cfg)
     
     
     #########################################################
