@@ -121,7 +121,7 @@ class CocoFormat(object):
         self.num_tgts = num_tgts
         self.same_classes = {47:"banana", 48:"apple", 50:"orange", 51:"broccoli", 52:"carrot"}
         self.simmilar_classes = {} #TO do
-        self.exclude_classes = {1:"people"}
+        self.exclude_classes = {}#{1:"people"}
         self.area_limit = 600
         pass
     

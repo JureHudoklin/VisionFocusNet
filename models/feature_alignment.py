@@ -16,6 +16,7 @@ class TemplateFeatAligner(nn.Module):
         super().__init__()
         
         self.d_model = d_model
+        self.n_heads = n_heads
         
         self.temp_proj = nn.Sequential(
             nn.Linear(self.d_model , self.d_model ),

@@ -13,7 +13,7 @@ class Config():
     WEIGHT_DECAY = 0.0001 
     LR_DROP = 25 # Drop LR after X epochs
     
-    BATCH_SIZE = 10
+    BATCH_SIZE = 12
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -30,7 +30,7 @@ class Config():
     ############
     # Backbone #
     ############
-    BACKBONE = 'resnet34'
+    BACKBONE = 'resnet50'
     DILATION = False
     POSITION_EMBEDDING = 'sine'
     RETURN_INTERM_LAYERS = True # masks
@@ -42,12 +42,12 @@ class Config():
     DROPOUT = 0.0
     N_HEADS = 8
     
-    NUM_QUERIES = 50 # Num of object queries
+    NUM_QUERIES = 100 # Num of object queries
     TWO_STAGE = False
     D_MODEL = 256
     DIM_FEEDFORWARD = 2048
-    NUM_ENCODER_LAYERS = 4
-    NUM_DECODER_LAYERS = 4
+    NUM_ENCODER_LAYERS = 6
+    NUM_DECODER_LAYERS = 6
     ACTIVATION = 'prelu'
     QUERY_SCALE_TYPE = 'cond_elewise' # 'cond_scalar'
     MODULATE_HW_ATTN = True
@@ -91,6 +91,7 @@ class Config():
     NUM_TGTS = 3
     PIN_MEMORY = True
     COCO_PATH = "/hdd/datasets/COCO/images"
+    #COCO_PATH = "/home/jure/datasets/COCO/images"
     AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
     GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"
     OBJECTS_365_PATH = "/home/jure/datasets/Objects365/data"

@@ -51,7 +51,7 @@ def make_tgtimg_transforms(image_set):
         # T.RandomSelect(
         #     T.RandomRotate(),
         #     ),
-        T.Resize(224, max_size=256),
+        T.Resize(224, max_size=448),
         T.RandomHorizontalFlip(),
 
         ST.RandomSelectMulti([

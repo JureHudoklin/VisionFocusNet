@@ -122,7 +122,7 @@ class DETR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        bs, c, h, w = src.shape
+        bs, _, h, w = src.shape
         
         #####################
         # Template Encoding #
@@ -132,7 +132,7 @@ class DETR(nn.Module):
         # obj_enc = self.template_encoder(samples_targets) # [BS*num_tgts, C]
         # obj_enc = obj_enc.decompose()[0] # [BS*num_tgts, C]
         obj_enc = self.template_proj(obj_enc)# [BS*num_tgts, C]
-        ref_placeholder = torch.zeros((bs, c), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
+        ref_placeholder = torch.zeros((bs, self.hidden_dim), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
         ref_placeholder = ref_placeholder.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
         ref_placeholder = ref_placeholder.permute(1, 0, 2) # [NQ, BS, C]
         
@@ -140,7 +140,6 @@ class DETR(nn.Module):
         # Transformer #
         ###############
         bs = src.shape[0]
-
         ref_points_unsigmoid = self.refpoint_embed.weight # [num_queries, 4]
             
         # prepare for DN

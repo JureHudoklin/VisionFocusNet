@@ -150,7 +150,7 @@ class Transformer(nn.Module):
         ##################
         memory_img = memory.view(h, w, bs, c).permute(2, 3, 0, 1) # NxCxHxW
         tgts = tgts.view(-1, bs, c).permute(1, 0, 2) # N x num_tgts x C
-        aligned_tgt_label_embed = self.feature_alignment(memory_img, tgts, tgt_point_embed.sigmoid(), image_sizes)
+        aligned_tgt_label_embed = self.feature_alignment(memory_img, tgts, tgt_point_embed.sigmoid().permute(1,0,2), image_sizes).permute(1, 0, 2) # QxNxC
         
         
         if self.two_stage:
