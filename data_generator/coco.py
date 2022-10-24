@@ -47,18 +47,27 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         return super(CocoLoader, self).__len__()
     
     def __getitem__(self, idx):
-        tgt_img = None
-        while tgt_img is None:
-            img, target = super(CocoLoader, self).__getitem__(idx)
-            image_id = self.ids[idx]
-            target = {'image_id': image_id, 'annotations': target}
-            img, tgt_img, target = self.prepare(img, target)
-            idx = random.randint(0, len(self)-1)
+        img, target = super(CocoLoader, self).__getitem__(idx)
+        image_id = self.ids[idx]
+        target = {'image_id': image_id, 'annotations': target}
+        img, tgt_img, target = self.prepare(img, target)
+            
+        if tgt_img is None:
+            tgt_img = torch.zeros(3, 224, 224)
+            tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
+            new_target = Target()
+            new_target.update(**{"size" : target["size"], "image_id" : target["image_id"], "orig_size" : target["orig_size"]})
+            new_target["sim_labels"] = torch.zeros_like(new_target["labels"])
+            target = new_target
         
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         if self._tgt_transforms is not None:
-            tgt_img, _ = self._tgt_transforms(tgt_img, None)
+            w, h = tgt_img.size
+            tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.as_tensor([h, w]), "orig_size" : torch.as_tensor([h, w])}))
+            
+        target.make_valid()
+        target = target.as_dict
         return img, tgt_img, target
             
 
@@ -222,6 +231,9 @@ class CocoFormat(object):
             max_area, max_area_idx = torch.max(box_areas, dim=0)
             if max_area < area_limit:
                 continue
+            box = target["boxes"][same_class_idx[max_area_idx]]
+            if box[2] - box[0] < 32 or box[3] - box[1] < 32:
+                continue
             else:
                 break
         else:
@@ -241,6 +253,8 @@ class CocoFormat(object):
         tgt_box = target["boxes"][max_area_idx]
         tgt_box_int = tgt_box.int()
         tgt_image = image.crop(tgt_box_int.tolist())
+        
+        target["labels"] = torch.ones_like(target["labels"])
         
         return image, tgt_image, target
        

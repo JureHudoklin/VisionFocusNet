@@ -43,7 +43,7 @@ class Config():
     N_HEADS = 8
     
     NUM_QUERIES = 100 # Num of object queries
-    TWO_STAGE = True
+    TWO_STAGE = False
     D_MODEL = 256
     DIM_FEEDFORWARD = 2048
     NUM_ENCODER_LAYERS = 6

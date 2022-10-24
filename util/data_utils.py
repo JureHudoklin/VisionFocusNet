@@ -47,9 +47,11 @@ def make_tgtimg_transforms(image_set):
         ])
     if image_set == "train":
         return T.Compose([
-        # T.RandomSelect(
-        #     T.RandomRotate(),
-        #     ),
+        T.RandomSelect(
+            T.RandomResize([50,100,200,300]),
+            T.NoTransform(),
+            #T.RandomRotate(),
+            ),
         T.Resize(224, max_size=448),
         T.RandomHorizontalFlip(),
 
