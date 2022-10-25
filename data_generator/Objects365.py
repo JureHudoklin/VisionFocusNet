@@ -11,7 +11,7 @@ from PIL import ImageFile
 import copy
 import numpy as np
 
-from util.data_utils import make_base_transforms, make_tgtimg_transforms, extract_tgt_img, Target
+from util.data_utils import make_input_transform, make_base_transforms, make_tgt_transforms,  extract_tgt_img, Target
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 from torchvision.ops import box_convert
@@ -20,19 +20,31 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class Objects365Loader():
-    def __init__(self, root_dir, split, transforms, tgt_transforms):
+    def __init__(self, root_dir, split,
+                 inp_transforms = None,
+                 base_transforms = None,
+                 tgt_transforms = None,
+                 num_tgts = 3,
+                 area_limit = 500):
         self.root_dir = root_dir
         self.split = split
         self.image_dir = os.path.join(root_dir, "images", split)
         self.labels_dir = os.path.join(root_dir, "labels", split)
         
-        self._transforms = transforms
+        self._inp_transforms = inp_transforms
+        self._base_transforms = base_transforms
         self._tgt_transforms = tgt_transforms
         
-        self.prepare = Format365()
+        self.num_tgts = num_tgts
+        self.area_limit = area_limit
+        
+        self.to_tensor = torchvision.transforms.ToTensor()
+        self.to_PIL = torchvision.transforms.ToPILImage()
         
         self.dataset = self._load_dataset(self.labels_dir)
         
+        self.exclude_classes = {}
+        self.same_classes = {}
         
         self.fail_save = self.__getitem__(0)
 
@@ -54,71 +66,72 @@ class Objects365Loader():
             
         boxes = box_convert(torch.as_tensor(boxes, dtype=torch.float32), in_fmt="cxcywh", out_fmt="xyxy") * torch.as_tensor([w, h, w, h])
         labels = torch.as_tensor(labels, dtype=torch.int64)
-        target = Target(**{"labels": labels, "boxes": boxes, "size": torch.as_tensor([h, w]), "orig_size": torch.as_tensor([h, w])})
+        target = Target(**{"labels": labels, "classes": labels, "boxes": boxes, "size": torch.as_tensor([h, w]), "orig_size": torch.as_tensor([h, w])})
         return target
   
     def __len__(self):
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        try:
-            file = self.dataset[idx]
-            file = file.decode("utf-8")
-            img_name = file.split(".")[0]
-            img_path = os.path.join(self.image_dir, img_name + ".jpg")
-            ann_path = os.path.join(self.labels_dir, file)
-            img_id = int(img_name.split("_")[-1])
-            with PIL.Image.open(img_path) as img:
-                img.load()
+        #try:
+        ### Load Image and Target data ###
+        file = self.dataset[idx]
+        file = file.decode("utf-8")
+        img_name = file.split(".")[0]
+        img_path = os.path.join(self.image_dir, img_name + ".jpg")
+        ann_path = os.path.join(self.labels_dir, file)
+        img_id = int(img_name.split("_")[-1])
+        with PIL.Image.open(img_path) as img:
+            img.load()
 
-            with open(ann_path, 'r') as f:
-                annotations = f.readlines()
-                
-            target = self._format_annotation(annotations, img)
-            target["image_id"] = img_id
+        with open(ann_path, 'r') as f:
+            annotations = f.readlines()
             
-            img, tgt_img, target = self.prepare(img, target)
-            if tgt_img is None:
-                tgt_img = torch.zeros(3, 224, 224)
-                tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
-                new_target = Target()
-                new_target.update(**{"size" : target["size"], "image_id" : target["image_id"], "orig_size" : target["orig_size"]})
-                new_target["sim_labels"] = torch.zeros_like(new_target["labels"])
-                target = new_target
-                
-            if self._transforms is not None:
-                img, target = self._transforms(img, target)
-            if self._tgt_transforms is not None:
-                w, h = tgt_img.size
-                tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.as_tensor([h, w]), "orig_size" : torch.as_tensor([h, w])}))
-                
-            target.make_valid()
-            target = target.as_dict
-            return img, tgt_img, target
+        base_target = self._format_annotation(annotations, img)
+        base_target["image_id"] = img_id
         
-        except:
-            print("Fail to load image: ", idx)
-            return self.fail_save
-
-    
-    def collate_fn(self, batch):
-        batch = list(zip(*batch))
-        batch[0] = nested_tensor_from_tensor_list(batch[0])
-        batch[1] = nested_tensor_from_tensor_list(batch[1])
-        return tuple(batch)
-
-    
-
-class Format365(object):
-    def __init__(self, area_limit = 1000) -> None:
-        self.to_tensor = torchvision.transforms.ToTensor()
-        self.to_PIL = torchvision.transforms.ToPILImage()
-
-        self.exclude_classes = {}
-        self.same_classes = {}
-        self.area_limit = area_limit
+        ### Format Base Labels ###
+        img, base_target = self.format_base_lbls(img, base_target)
+        base_target.make_valid()
+        if self._base_transforms is not None:
+            img, base_target = self._base_transforms(img, base_target)
+            
+        ### Format Target Labels ###
+        img, tgt_imgs, tgt_target = self.format_tgt_lbls(img, base_target)
         
+        if tgt_imgs is None:
+            tgt_img = torch.zeros(3, 224, 32)
+            tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
+            tgt_target.filter(None)
+            tgt_imgs = [tgt_img for _ in range(self.num_tgts)]
+            
+        tgt_target.make_valid()
+           
+        # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
+        if self._tgt_transforms is not None:
+            tgt_imgs_new = []
+            for tgt_img in tgt_imgs:
+                tgt_img, _ = self._tgt_transforms(tgt_img, None)
+                tgt_img, _ = self._inp_transforms(tgt_img, None)
+                
+                tgt_imgs_new.append(tgt_img)
+            tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
+            tgt_target.normalize()
+            
+            
+        img, base_target = self._inp_transforms(img, base_target)
     
+        ### Return the dictionary form of the target ###
+        tgt_target = tgt_target.as_dict
+        base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
+        target = {**base_target, **tgt_target}
+        
+        return img, tgt_imgs, target
+        
+        # except:
+        #     print("Fail to load image: ", idx)
+        #     return self.fail_save
+        
     def format_base_lbls(self, image, target):
         assert isinstance(target, Target)
         
@@ -126,26 +139,27 @@ class Format365(object):
         target.calc_iscrowd()
 
         return image, target
-    
-        
-    def format_tgt_img(self, image, target):
-        assert isinstance(target, Target)
+
+    def format_tgt_lbls(self, image, base_target):
+        assert isinstance(base_target, Target)
+        target = copy.deepcopy(base_target)
         if len(target) == 0:
             return image, None, target
-        labels = target["labels"]
+        
+        classes = target["classes"]
 
-        unique_labels = torch.unique(labels)
-        unique_labels_list = unique_labels.tolist()
-        random.shuffle(unique_labels_list)
+        unique_classes = torch.unique(classes)
+        unique_classes_list = unique_classes.tolist()
+        random.shuffle(unique_classes_list)
         
         for keys in self.exclude_classes.keys():
-            if keys in unique_labels_list:
-                unique_labels_list.remove(keys)
+            if keys in unique_classes_list:
+                unique_classes_list.remove(keys)
         
-        for selected_class in unique_labels_list:
+        for selected_class in unique_classes_list:
             new_target = copy.deepcopy(target)
             class_id = selected_class
-            same_class_idx = torch.where(labels == selected_class)[0]
+            same_class_idx = torch.where(classes == selected_class)[0]
             
             new_target.filter(same_class_idx)
             
@@ -157,48 +171,59 @@ class Format365(object):
             else:
                 break
 
-        if len(same_class_idx) == 0:
+        target.filter(same_class_idx)
+        if len(target) == 0:
             return image, None, target
         
-        
         # Get all labels of the same class
-        target.filter(same_class_idx)
-        new_target = copy.deepcopy(target)
-        new_target.update(**{"labels": torch.ones_like(new_target["labels"])})
-        _, min_crowd_idx = torch.min(new_target["iscrowd"], dim=0)
+        target.update(**{"labels": torch.ones_like(target["labels"])})
+        _, min_crowd_idx = torch.min(target["iscrowd"], dim=0)
 
-        
         # Set similarity indices:
         if same_class_idx.shape[0] >= 3:
             tgt_num = random.randint(1, 3)
-            min_crowd_idx = torch.topk(new_target["iscrowd"], tgt_num, largest=False)[1]
+            min_crowd_idx = torch.topk(target["iscrowd"], tgt_num, largest=False)[1]
         else:
             tgt_num = 1
             
-        similarity_idx = torch.zeros_like(new_target["labels"])
+        similarity_idx = torch.zeros_like(target["labels"])
         similarity_idx[min_crowd_idx] = 1
         if class_id in self.same_classes:
             similarity_idx[:] = 1
-        new_target.update(**{"sim_labels" : similarity_idx})
+        target.update(**{"sim_labels" : similarity_idx})
        
-        tgt_box = new_target["boxes"][min_crowd_idx] # # [N, 4] x1 y1 x2 y2
+        tgt_box = target["boxes"][min_crowd_idx] # # [N, 4] x1 y1 x2 y2
         tgt_box = tgt_box.reshape(-1, 4)
         
-        tgt_img = extract_tgt_img(image, tgt_box)
+        tgt_img = extract_tgt_img(image, tgt_box, num_tgts = self.num_tgts)
         
-        return image, tgt_img, new_target
-    
-    def __call__(self, image, target):
-        image, target = self.format_base_lbls(image, target)
-        image, tgt_img, target = self.format_tgt_img(image, target)
         return image, tgt_img, target
+
+    def collate_fn(self, batch):
+        batch = list(zip(*batch))
+        batch[0] = nested_tensor_from_tensor_list(batch[0])
+        tgts = [item for sublist in batch[1] for item in sublist]
+        batch[1] = nested_tensor_from_tensor_list(tgts)
+        return tuple(batch)
+
     
+
     
 def build_365_dataset(image_set, args):
     root = args.OBJECTS_365_PATH
     assert os.path.exists(root), "Please download 365 dataset to {}".format(root)
     
-    dataset = Objects365Loader(root_dir=root, split = image_set, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms(image_set))
+    inp_transform = make_input_transform()
+    base_transforms = make_base_transforms(image_set)
+    tgt_transforms = make_tgt_transforms(image_set, tgt_img_size=args.TGT_IMG_SIZE, tgt_img_max_size=args.TGT_MAX_IMG_SIZE)
+    
+    dataset = Objects365Loader(root_dir=root,
+                               split = image_set,
+                               base_transforms = base_transforms,
+                               tgt_transforms = tgt_transforms,
+                               inp_transforms = inp_transform,
+                               num_tgts=args.NUM_TGTS,
+                               area_limit = args.TGT_MIN_AREA,)
     return dataset
 
 def get_365_data_generator(args):

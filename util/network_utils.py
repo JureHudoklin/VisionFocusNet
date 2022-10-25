@@ -39,15 +39,20 @@ def load_model(model, optimizer, load_dir, device, epoch=None):
 @torch.no_grad()
 def display_model_outputs(outputs, samples, tgt_imgs, targets):
     bs = len(targets)
+    tgt_imgs, _ = tgt_imgs.decompose()
+    N_t = tgt_imgs.shape[0]//bs
     denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     denorm2 = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
-    fig, axs = plt.subplots(bs, 2, figsize=(6, 2*bs), dpi = 500)
+    fig, axs = plt.subplots(bs, 1+N_t, figsize=(6, 2*bs), dpi = 500)
+    if bs == 1:
+        axs = axs.reshape(1, 1+N_t) 
+        
+    tgt_imgs = tgt_imgs.reshape(bs, N_t, 3, tgt_imgs.shape[-2], tgt_imgs.shape[-1])
+
     for b in range(bs):
         img = denorm(samples.tensors[b])
         img = img.permute(1, 2, 0).cpu().numpy()
-        tgt_img = denorm2(tgt_imgs.tensors[b].contiguous())
-        tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
         
         ax = axs[b, 0]
         ax.imshow(img)
@@ -89,9 +94,14 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
             ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=4, alpha = alpha)
             
-        ax = axs[b, 1]
-        ax.imshow(tgt_img)
-        ax.axis("off")
+            
+        ### Plot Target Objects ###
+        for j in range(N_t):
+            tgt_img = denorm2(tgt_imgs[b, j].contiguous())
+            tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
+            ax = axs[b, 1+j]
+            ax.imshow(tgt_img)
+            ax.axis("off")
             
     fig.tight_layout()
     return fig    

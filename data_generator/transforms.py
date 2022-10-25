@@ -19,16 +19,19 @@ from util.data_utils import Target
 
 def crop(image, target, region, keep_boxes = True):
     assert isinstance(image, PIL.Image.Image)
-    assert isinstance(target, Target)
+    assert isinstance(target, Target) or target is None
    
-    target = copy.deepcopy(target)
-
     y, x, h, w = region # L, Up, R, Down
-
     orig_w, orig_h = image.size
-
+    
+    if target is None:
+        cropped_image = F.crop(image, y, x, h, w)
+        return image, target
+    
+    target = copy.deepcopy(target)
     boxes = target["boxes"]
-    if len(boxes) == 0:
+    
+    if len(boxes) == 0 :
         cropped_image = F.crop(image, y, x, h, w)
     else:
         if keep_boxes:
@@ -71,16 +74,19 @@ def crop(image, target, region, keep_boxes = True):
         cropped_boxes = target['boxes'].reshape(-1, 2, 2)
         keep = torch.all(cropped_boxes[:, 1, :] > cropped_boxes[:, 0, :], dim=1)
         
-        target = Target(**target.filter(keep))
+        target.filter(keep)
      
     return cropped_image, target
 
 
 def hflip(image, target):
     assert isinstance(image, PIL.Image.Image)
-    assert isinstance(target, Target)
+    assert isinstance(target, Target) or target is None
     flipped_image = F.hflip(image)
-    if len(target) == 0:
+    
+    if target is None:
+        return flipped_image, target
+    elif len(target) == 0:
         return flipped_image, target
     else:
         w, h = image.size
@@ -95,7 +101,7 @@ def hflip(image, target):
 
 def resize(image, target, size, max_size=None):
     assert isinstance(image, PIL.Image.Image)
-    assert isinstance(target, Target)
+    assert isinstance(target, Target) or target is None
     # size can be min_size (scalar) or (w, h) tuple
 
     def get_size_with_aspect_ratio(image_size, size, max_size=None):
@@ -127,6 +133,9 @@ def resize(image, target, size, max_size=None):
     size = get_size(image.size, size, max_size)
     rescaled_image = F.resize(image, size)
 
+    if target is None:
+        return rescaled_image, target
+
     if len(target) == 0:
         return rescaled_image, target
 
@@ -147,9 +156,12 @@ def resize(image, target, size, max_size=None):
 
 def pad(image, target, padding):
     assert isinstance(image, PIL.Image.Image)
-    assert isinstance(target, Target)
+    assert isinstance(target, Target) or target is None
+    
     # assumes that we only pad on the bottom right corners
     padded_image = F.pad(image, (0, 0, padding[0], padding[1]))
+    if target is None:
+        return padded_image, target
     if len(target) == 0:
         return padded_image, target
     target = copy.deepcopy(target)
@@ -160,9 +172,13 @@ def pad(image, target, padding):
 
 def rotate_90(image, target):
     assert isinstance(image, PIL.Image.Image)
-    assert isinstance(target, Target)
+    assert isinstance(target, Target) or target is None
+    
     rotated_image = image.transpose(PIL.Image.ROTATE_90)
-    if len(target) == 0:
+    
+    if target is None:
+        return rotated_image, target
+    elif len(target) == 0:
         return rotated_image, target
     else:
         w, h = image.size
@@ -184,7 +200,7 @@ def rotate(image, target, angle):
         Out: rotated image (w, h), rotated boxes
     '''
     assert isinstance(image, PIL.Image.Image)
-    assert isinstance(target, Target)
+    assert isinstance(target, Target) or target is None
     new_image = image.copy()
      
     #Rotate image, expand = True
@@ -193,7 +209,10 @@ def rotate(image, target, angle):
     cx = w/2
     cy = h/2
     new_image = new_image.rotate(angle, expand=True)
-    if len(target) == 0:
+    
+    if target is None:
+        return new_image, target
+    elif len(target) == 0:
         return new_image, target
     
     whwh = torch.Tensor([w, h, w, h])
@@ -285,15 +304,16 @@ class RandomCrop(object):
 
 
 class RandomSizeCrop(object):
-    def __init__(self, min_size: int, max_size: int):
+    def __init__(self, min_size: int, max_size: int, keep_boxes: bool = True):
         self.min_size = min_size
         self.max_size = max_size
+        self.keep_boxes = keep_boxes
 
     def __call__(self, img: PIL.Image.Image, target: Target):
         w = random.randint(self.min_size, min(img.width, self.max_size))
         h = random.randint(self.min_size, min(img.height, self.max_size))
         region = T.RandomCrop.get_params(img, [h, w])
-        return crop(img, target, region)
+        return crop(img, target, region, keep_boxes=self.keep_boxes)
 
 
 class CenterCrop(object):
@@ -446,16 +466,12 @@ class Normalize(object):
 
     def __call__(self, image, target):
         image = F.normalize(image, mean=self.mean, std=self.std)
+        if target is None:
+            return image, target
         if len(target) == 0:
             return image, target
-        
         target = copy.deepcopy(target)
-        
-        h, w = image.shape[-2:]
-        boxes = target["boxes"]
-        boxes = box_xyxy_to_cxcywh(boxes)
-        boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
-        target["boxes"] = boxes
+        target.normalize()
         
         return image, target
 

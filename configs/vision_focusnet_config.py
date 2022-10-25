@@ -13,7 +13,7 @@ class Config():
     WEIGHT_DECAY = 0.0001 
     LR_DROP = 25 # Drop LR after X epochs
     
-    BATCH_SIZE = 12
+    BATCH_SIZE = 10
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -22,7 +22,7 @@ class Config():
     FOCAL_ALPHA = 0.25
     
     CLASS_LOSS_COEF = 1.0
-    SIM_LOSS_COEF = 0.1
+    SIM_LOSS_COEF = 1
     BBOX_LOSS_COEF = 5.0
     GIOU_LOSS_COEF = 2.0
     
@@ -57,6 +57,7 @@ class Config():
     # Template Encoder #
     ####################
     TEMPLATE_ENCODER = {
+        "NAME": "vits16",
         "LR" : 5e-6,
         "PRETRAINED" : True,
     }
@@ -74,8 +75,8 @@ class Config():
     #################
     # Augmentations #
     #################
-    TGT_IMG_SIZE = (256, 256)
-    
+    TGT_IMG_SIZE = 224
+    TGT_MAX_IMG_SIZE = 448
     
     ###########
     # Matcher #
@@ -89,9 +90,10 @@ class Config():
     ###########
     NUM_WORKERS = 6
     NUM_TGTS = 3
+    TGT_MIN_AREA = 500
     PIN_MEMORY = True
-    COCO_PATH = "/hdd/datasets/COCO/images"
-    #COCO_PATH = "/home/jure/datasets/COCO/images"
+    #COCO_PATH = "/hdd/datasets/COCO/images"
+    COCO_PATH = "/home/jure/datasets/COCO/images"
     AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
     GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"
     OBJECTS_365_PATH = "/home/jure/datasets/Objects365/data"

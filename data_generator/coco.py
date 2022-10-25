@@ -15,7 +15,7 @@ import data_generator.transforms as T
 import data_generator.sltransforms as ST
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
-from util.data_utils import make_base_transforms, make_tgtimg_transforms, Target, extract_tgt_img
+from util.data_utils import make_base_transforms, make_tgt_transforms, Target, extract_tgt_img
 
 class CocoLoader(torchvision.datasets.CocoDetection):
     """`MS Coco Detection <http://mscoco.org/dataset/#detections-challenge2016>`_ Dataset.
@@ -243,7 +243,7 @@ def build_dataset(image_set, args):
         "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/instances_val2017.json")),
     }
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoLoader(img_folder, ann_file, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms(image_set), num_tgts=args.NUM_TGTS)
+    dataset = CocoLoader(img_folder, ann_file, transforms=make_base_transforms(image_set), tgt_transforms = make_tgt_transforms(image_set), num_tgts=args.NUM_TGTS)
     return dataset
 
 def get_coco_data_generator(args):

@@ -10,8 +10,9 @@ import torchvision
 import random
 import glob
 import PIL
+import copy
 
-from util.data_utils import make_base_transforms, make_tgtimg_transforms, Target
+from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 import xml.etree.ElementTree as ET
@@ -25,21 +26,23 @@ class GMULoader():
                 val_obj_list = [],
                 keep_noobj_images = False,
                 difficulty_threshold = 10,
-                transforms = None,
-                tgt_transforms = None
+                inp_transforms = None,
+                base_transforms = None,
+                tgt_transforms = None,
+                num_tgts = 2,
                 ) -> None:
         
-        self.root_dir = root_dir
+        self.root_dir = root_dir    
+        self.split = split
         self.scenes = scenes
         self.keep_noobj_images = keep_noobj_images
         self.difficulty_threshold = difficulty_threshold
         
-        self._transforms = transforms
+        self._inp_transforms = inp_transforms
+        self._base_transforms = base_transforms
         self._tgt_transforms = tgt_transforms
 
-        self.scenes = scenes
-        self.split = split
-        
+        self.num_tgts = num_tgts
 
         self._check_data_integrity(self.scenes)
 
@@ -51,7 +54,8 @@ class GMULoader():
         self.instance_ids_inversed = {v: k for k, v in self.instance_ids.items()}
         self.dataset = self._load_dataset()
         
-        self.prepare = FormatGMU(root_dir, self.instance_ids)
+        self.to_tensor = torchvision.transforms.ToTensor()
+        self.to_PIL = torchvision.transforms.ToPILImage()
         
 
     def _load_dataset(self):
@@ -81,7 +85,7 @@ class GMULoader():
                 # Get all objects
                 img_info = {}
                 img_info["boxes"] = []
-                img_info["labels"] = []
+                img_info["classes"] = []
                 
                 objects = root.findall("object")
                 for obj in objects:
@@ -106,12 +110,13 @@ class GMULoader():
                                        int(obj.find("bndbox").find("ymax").text)]
                     
                     img_info["boxes"].append(box)
-                    img_info["labels"].append(label)
+                    img_info["classes"].append(label)
                  
                 if len(img_info["boxes"]) == 0 and not self.keep_noobj_images:
                     continue 
                 img_info = {k: torch.tensor(v) for k, v in img_info.items()}
                 target.update(**img_info)
+                target["labels"] = target["classes"]
                 target.calc_area()
                 target.calc_iscrowd()
 
@@ -151,36 +156,68 @@ class GMULoader():
         img_path = os.path.join(self.root_dir, scene, "Images", image_id+".png")
         with PIL.Image.open(img_path) as img:
             img.load()
-        tgt_img = None
         
-        img, tgt_img, target = self.prepare(img, target)
-        
-        if self._transforms is not None:
-            img, target = self._transforms(img, target)
-        if self._tgt_transforms is not None:
-            w, h = tgt_img.size
-            tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.tensor([h, w]), "orig_size" : torch.tensor([h, w])}))
-        
-        target.make_valid()
-        target = target.as_dict  
-        return img, tgt_img, target
-    
-    def collate_fn(self, batch):
-        batch = list(zip(*batch))
-        batch[0] = nested_tensor_from_tensor_list(batch[0])
-        batch[1] = nested_tensor_from_tensor_list(batch[1])
-        return tuple(batch)
+        ### Format base labels ###
+        img, base_target = self.format_base_lbls(img, target)
+        base_target.make_valid()
+        if self._base_transforms is not None:
+            img, base_target = self._base_transforms(img, base_target)
             
-
-class FormatGMU(object):
-    def __init__(self, root_dir, instance_ids) -> None:
-        self.root_dir = root_dir
-        self.instance_ids = instance_ids
-        self.to_tensor = torchvision.transforms.ToTensor()
-        self.to_PIL = torchvision.transforms.ToPILImage()
+        ### Load tgt labels ###
+        img, tgt_imgs, tgt_target = self.format_target_lbls(img, base_target)
+        tgt_target.make_valid()
+        if len(tgt_imgs) < self.num_tgts:
+            place_holder_img = self.to_PIL(torch.zeros(3, 64, 64))
+            tgt_imgs = tgt_imgs + [place_holder_img]*(self.num_tgts - len(tgt_imgs))
+        
+        # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
+        if self._tgt_transforms is not None:
+            tgt_imgs_new = []
+            for tgt_img in tgt_imgs:
+                tgt_img, _ = self._tgt_transforms(tgt_img, None)
+                tgt_img, _ = self._inp_transforms(tgt_img, None)
+                
+                tgt_imgs_new.append(tgt_img)
+            tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
+            tgt_target.normalize()
+        
+        img, base_target = self._inp_transforms(img, base_target)
+        
+        ### Return the dictionary form of the target ###
+        tgt_target = tgt_target.as_dict
+        base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
+        target = {**base_target, **tgt_target}
+        
+        return img, tgt_imgs, target
     
+    def format_base_lbls(self, img, target):
+        target = copy.deepcopy(target)
+        w, h = target["size"]
+        
+        image_id = int(target.image_id.replace("rgb_", ""))
+        target["image_id"] = image_id
+        
+        return img, target
+    
+    def format_target_lbls(self, img, target):
+        tgt_target = copy.deepcopy(target)
+        classes = tgt_target["classes"]
+        unique_classes = torch.unique(classes)
+        unique_classes_list = unique_classes.tolist()
+        random.shuffle(unique_classes_list)
+        
+        selected_class = unique_classes_list[0]
+        same_class_idx = torch.where(classes == selected_class)[0]
+        
+        # Get all labels of the same class
+        tgt_target.filter(same_class_idx) 
+        tgt_target.update(**{"labels": torch.ones_like(tgt_target["classes"]), "sim_labels" : torch.ones_like(tgt_target["classes"])})
+        
+        # Set similarity indices:
+        tgt_imgs = self._get_tgt_img(selected_class)
+        return img, tgt_imgs, tgt_target
+        
     def _get_tgt_img(self, obj_id):
-
         obj_name = self.instance_ids[obj_id]
         # Get all files from directory that contain obj_name
         tgt_imgs = []
@@ -191,63 +228,26 @@ class FormatGMU(object):
             else:
                 return None
             
+        tgt_imgs = []
         for target_idx in ["target_0", "target_1"]:
             files_target = glob.glob(os.path.join(self.root_dir, target_idx, obj_name + "*"))
             file_path = get_file_path(files_target)
             if file_path is not None:
-                if file_path == None:
-                    tgt_img = None
-                else:
-                    with PIL.Image.open(file_path) as tgt_img:
-                        tgt_img.load()
-                tgt_img = self.to_tensor(tgt_img) if tgt_img is not None else  torch.zeros(3, 1, 1)
-                if tgt_img.shape[1] > tgt_img.shape[2]:
-                    tgt_img = tgt_img.permute(0, 2, 1)
+                with PIL.Image.open(file_path) as tgt_img:
+                    tgt_img.load()
                 tgt_imgs.append(tgt_img)
-        
-        new_h = tgt_imgs[0].shape[1] + tgt_imgs[1].shape[1]
-        new_w = max(tgt_imgs[0].shape[2], tgt_imgs[1].shape[2])
-        tgt_img = torch.zeros((3, new_h, new_w))
-        tgt_img[:, :tgt_imgs[0].shape[1], :tgt_imgs[0].shape[2]] = tgt_imgs[0]
-        tgt_img[:, tgt_imgs[0].shape[1]:, :tgt_imgs[1].shape[2]] = tgt_imgs[1]
-        
-        pil_tgt_img = self.to_PIL(tgt_img)
-        
-        return pil_tgt_img
-        
+            else:
+                return None
+
+        return tgt_imgs
     
-    def format_base_lbls(self, image, target):
-        w, h = target["size"]
-        
-        image_id = int(target.image_id.replace("rgb_", ""))
-        target.update(**{"image_id": image_id})
-        
-        return image, target
-        
-    def format_tgt_img(self, image, target):
-        labels = target["labels"]
-        unique_labels = torch.unique(labels)
-        unique_labels_list = unique_labels.tolist()
-        random.shuffle(unique_labels_list)
-        
-        selected_class = unique_labels_list[0]
-        same_class_idx = torch.where(labels == selected_class)[0]
-        
-        # Get all labels of the same class
-        target.filter(same_class_idx) # Target(**target.filter(same_class_idx))
-        target.update(**{"labels": torch.ones_like(target["labels"]), "sim_labels" : torch.ones_like(target["labels"])})
-        
-        # Set similarity indices:
-        tgt_img = self._get_tgt_img(selected_class)
-        return image, tgt_img, target
-    
-    def __call__(self, image, target):
-        assert isinstance(image, PIL.Image.Image)
-        assert isinstance(target, Target)
-        image, target = self.format_base_lbls(image, target)
-        image, tgt_img, target = self.format_tgt_img(image, target)
-        return image, tgt_img, target
-    
+    def collate_fn(self, batch):
+        batch = list(zip(*batch))
+        batch[0] = nested_tensor_from_tensor_list(batch[0])
+        tgts = [item for sublist in batch[1] for item in sublist]
+        batch[1] = nested_tensor_from_tensor_list(tgts)
+        return tuple(batch)
+ 
     
 def build_GMU_dataset(image_set, args):
     root = args.GMU_PATH
@@ -255,7 +255,19 @@ def build_GMU_dataset(image_set, args):
     VAL_OBJ_LIST = [2, 13, 18, 7, 14, 12, 8, 29, 17, 26, 6, 9, 24, 5, 32, 96, 22, 21]
     assert os.path.exists(root), "Please download AVD dataset to {}".format(root)
     
-    dataset = GMULoader(root_dir=root, split=image_set, scenes=SCENE_LIST, val_obj_list = VAL_OBJ_LIST, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms(image_set))
+    inp_transform = make_input_transform()
+    base_transforms = make_base_transforms(image_set)
+    tgt_transforms = make_tgt_transforms(image_set, tgt_img_size=args.TGT_IMG_SIZE, tgt_img_max_size=args.TGT_MAX_IMG_SIZE)
+    
+    dataset = GMULoader(root_dir=root,
+                        split=image_set,
+                        scenes=SCENE_LIST,
+                        val_obj_list = VAL_OBJ_LIST,
+                        base_transforms = base_transforms,
+                        tgt_transforms = tgt_transforms,
+                        inp_transforms = inp_transform,
+                        num_tgts=args.NUM_TGTS,
+                        )
     return dataset
 
 def get_gmu_data_generator(args):
@@ -269,9 +281,9 @@ def get_gmu_data_generator(args):
         sampler_train, args.BATCH_SIZE, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
-                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS)
+                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS, pin_memory=True)
     data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
-                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS)
+                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS, pin_memory=True)
     
     return data_loader_train, data_loader_val
 

@@ -13,7 +13,7 @@ import glob
 import json
 import PIL
 
-from util.data_utils import make_base_transforms, make_tgtimg_transforms, Target
+from util.data_utils import make_base_transforms, make_tgt_transforms, Target
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 from torchvision.ops import box_convert
@@ -248,7 +248,7 @@ def build_AVD_dataset(image_set, args):
 
     assert os.path.exists(root), "Please download AVD dataset to {}".format(root)
     
-    dataset = AVDLoader(root_dir=root, split = image_set, scenes=SCENE_LIST, val_obj_list=VAL_OBJ_LIST, transforms=make_base_transforms(image_set), tgt_transforms = make_tgtimg_transforms(image_set))
+    dataset = AVDLoader(root_dir=root, split = image_set, scenes=SCENE_LIST, val_obj_list=VAL_OBJ_LIST, transforms=make_base_transforms(image_set), tgt_transforms = make_tgt_transforms(image_set))
     return dataset
 
 def get_avd_data_generator(args):

@@ -66,18 +66,25 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
                 step = batch+epoch*len(data_loader)
                 write_summary(writer, merged, step, f"running_stats")
 
-            if batch % 1000 == 0:
-                pass
-                # fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                # writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
-                # plt.close(fig)
+            if batch % 10 == 0:
+                fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+                writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
+                plt.close(fig)
                 
             if batch % 5000 == 0:
                 torch.cuda.empty_cache()
                 save_model(model, optimizer, epoch, save_dir, name = "intermediate")
-
-           
             
+            if batch == len(data_loader)-1:
+                stats = stats_tracker.get_stats_current()
+                merged = {**stats[0], **stats[1]}
+                step = batch+epoch*len(data_loader)
+                write_summary(writer, merged, step, f"running_stats")
+                
+                fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+                writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
+                plt.close(fig)
+                
             batch += 1
         
     return stats_tracker.get_stats_avg()

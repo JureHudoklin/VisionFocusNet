@@ -19,7 +19,7 @@ from util.dn_utils import prepare_for_dn, dn_post_process, DnLoss
 
 from .backbone import build_backbone
 from .transformer import build_transformer
-from .template_encoder import build_template_encoder, build_resnet_template_encoder
+from .template_encoder import build_template_encoder
 from .layer_util import MLP, inverse_sigmoid
 from .feature_alignment import TemplateFeatAligner
 from loses.sigmoid_focal_loss import sigmoid_focal_loss, focal_loss, FocalLoss
@@ -127,10 +127,10 @@ class DETR(nn.Module):
         #####################
         # Template Encoding #
         #####################
-        samples_targets, _ = samples_targets.decompose()
-        obj_enc: torch.Tensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
+        #samples_targets, _ = samples_targets.decompose()
+        obj_enc: NestedTensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
         # obj_enc = self.template_encoder(samples_targets) # [BS*num_tgts, C]
-        # obj_enc = obj_enc.decompose()[0] # [BS*num_tgts, C]
+        obj_enc = obj_enc.decompose()[0] # [BS*num_tgts, C]
         obj_enc = self.template_proj(obj_enc)# [BS*num_tgts, C]
         ref_placeholder = torch.zeros((bs, self.hidden_dim), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
         ref_placeholder = ref_placeholder.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
@@ -495,7 +495,6 @@ def build_model(args, device):
 
     transformer = build_transformer(args)
     
-    #template_encoder = build_resnet_template_encoder(args)
     template_encoder = build_template_encoder(args)
 
     model = DETR(
