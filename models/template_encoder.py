@@ -1,6 +1,7 @@
 from turtle import reset
 import torch
 import torch.nn as nn
+from torch.utils import checkpoint
 from torchsummary import summary
 from torch.profiler import profile, record_function, ProfilerActivity
 
@@ -60,12 +61,14 @@ class DinoVits16(nn.Module):
     def __init__(self,
                  trainable=False,
                  pretrained=True,
+                 use_checkpointing=False,
                  *args,
                  **kwargs) -> None:
         super(DinoVits16, self).__init__(*args, **kwargs)
     
         self.out_channels = 384
-        self.vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16', pretrained=pretrained)
+        self.use_checkpointing = use_checkpointing
+        self.vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16', pretrained=pretrained)        
         if trainable:
             for param in self.vits16.parameters():
                 param.requires_grad = True
@@ -90,7 +93,12 @@ class DinoVits16(nn.Module):
         """
         assert isinstance(x, NestedTensor)
         inp, _ = x.decompose()
-        temp_feat = self.vits16(inp)
+        if self.use_checkpointing:
+            inp.requires_grad_(True)
+            temp_feat: torch.Tensor = checkpoint.checkpoint(self.vits16, inp)
+        else:
+            temp_feat: torch.Tensor = self.vits16(inp)
+            
         out = NestedTensor(temp_feat, None)
         return out
     
@@ -139,7 +147,7 @@ def build_template_encoder(cfg):
     name = args["NAME"]
     
     if name == "vits16":
-        model = DinoVits16(trainable=trainable, pretrained=args["PRETRAINED"])
+        model = DinoVits16(trainable=trainable, pretrained=args["PRETRAINED"], use_checkpointing=args["USE_CHECKPOINTING"])
     elif name == "resnet50":
         model = TemplateEncoder_ResNet("resnet50", trainable, False, False, pretrained=args["PRETRAINED"])
     else:

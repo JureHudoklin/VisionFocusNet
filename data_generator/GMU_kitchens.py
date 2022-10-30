@@ -12,7 +12,7 @@ import glob
 import PIL
 import copy
 
-from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target
+from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target, CustomBatch, collate_wrapper, set_worker_sharing_strategy
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 import xml.etree.ElementTree as ET
@@ -50,7 +50,7 @@ class GMULoader():
         
         self.val_obj_list = val_obj_list
         self.train_obj_list = [id for id in self.instance_ids.keys() if id not in self.val_obj_list]
-
+        
         self.instance_ids_inversed = {v: k for k, v in self.instance_ids.items()}
         self.dataset = self._load_dataset()
         
@@ -185,6 +185,7 @@ class GMULoader():
         
         ### Return the dictionary form of the target ###
         tgt_target = tgt_target.as_dict
+        base_target.normalize()
         base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
         target = {**base_target, **tgt_target}
         
@@ -240,13 +241,6 @@ class GMULoader():
                 return None
 
         return tgt_imgs
-    
-    def collate_fn(self, batch):
-        batch = list(zip(*batch))
-        batch[0] = nested_tensor_from_tensor_list(batch[0])
-        tgts = [item for sublist in batch[1] for item in sublist]
-        batch[1] = nested_tensor_from_tensor_list(tgts)
-        return tuple(batch)
  
     
 def build_GMU_dataset(image_set, args):
@@ -257,7 +251,11 @@ def build_GMU_dataset(image_set, args):
     
     inp_transform = make_input_transform()
     base_transforms = make_base_transforms(image_set)
-    tgt_transforms = make_tgt_transforms(image_set, tgt_img_size=args.TGT_IMG_SIZE, tgt_img_max_size=args.TGT_MAX_IMG_SIZE)
+    tgt_transforms = make_tgt_transforms(image_set, 
+                                         tgt_img_size=args.TGT_IMG_SIZE, 
+                                         tgt_img_max_size=args.TGT_MAX_IMG_SIZE, 
+                                         random_rotate=False,
+                                         use_sl_transforms=True,)
     
     dataset = GMULoader(root_dir=root,
                         split=image_set,
@@ -277,13 +275,17 @@ def get_gmu_data_generator(args):
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
+    pin_memory = args.PIN_MEMORY
+
     batch_sampler_train = torch.utils.data.BatchSampler(
         sampler_train, args.BATCH_SIZE, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
-                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS, pin_memory=True)
+                                   collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=pin_memory,
+                                   worker_init_fn=set_worker_sharing_strategy)
     data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
-                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS, pin_memory=True)
+                                 drop_last=False, collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=pin_memory,
+                                 worker_init_fn=set_worker_sharing_strategy)
     
     return data_loader_train, data_loader_val
 

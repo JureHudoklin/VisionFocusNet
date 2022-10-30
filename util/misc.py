@@ -43,6 +43,12 @@ class NestedTensor(object):
         else:
             cast_mask = None
         return NestedTensor(cast_tensor, cast_mask)
+    
+    def pin_memory(self):
+        self.tensors = self.tensors.pin_memory()
+        if self.mask is not None:
+            self.mask = self.mask.pin_memory()
+        return self
 
     def decompose(self):
         return self.tensors, self.mask
@@ -53,6 +59,10 @@ class NestedTensor(object):
     @property
     def device(self):
         return self.tensors.device
+    
+    @property
+    def shape(self):
+        return self.tensors.shape
 
 
 def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):

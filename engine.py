@@ -1,4 +1,5 @@
 
+from random import sample
 import torch
 import numpy as np
 import time
@@ -10,10 +11,11 @@ import torch.nn as nn
 
 from util.statistics import StatsTracker
 from util.network_utils import display_model_outputs, write_summary, save_model
+from util.data_utils import make_dummy_input
 from data_generator.coco_eval import CocoEvaluator
 
 
-def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, writer, save_dir, max_norm: float = 0.1):
+def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, save_dir, cfg, max_norm: float = 0.1):
     model.train()
     criterion.train()
     stats_tracker = StatsTracker()
@@ -21,36 +23,15 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
     total_batches = len(data_loader)
     start_time = time.time()
     
-    for samples, tgt_imgs, targets in data_loader:
-        #with torch.autograd.set_detect_anomaly(True):
-
-        samples = samples.cuda(non_blocking=True)
-        tgt_imgs = tgt_imgs.cuda(non_blocking=True)
-        targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
-        
-        outputs = model(samples, tgt_imgs, targets)
-
-        
-        loss_dict, stats_dict = criterion(outputs, targets)
-        weight_dict = criterion.weight_dict
-        dn_weight_dict = criterion.dn_weight_dict
-        loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-        loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
-        
-        losses = loss_matching + loss_dn
-
-        optimizer.zero_grad(set_to_none=True)
-        losses.backward()
-        if max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        optimizer.step()
-        
-        with torch.no_grad():
-            loss_dict["loss"] = losses
-            loss_dict["loss_matching"] = loss_matching
-            loss_dict["loss_dn"] = loss_dn
-            stats_dict["loss"] = losses
-            
+    # --- Do a dry run to reserve the buffers ---
+    #dry_run(cfg, model, criterion, optimizer)
+    
+    for data in data_loader: #samples, tgt_imgs, targets
+        if batch == 1:
+            # --- Do a dry run to reserve the buffers ---
+            dry_run(cfg, model, criterion, optimizer)
+            print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
+        else:            
             stats_tracker.update(loss_dict, stats_dict)
             
             # print statistics
@@ -66,9 +47,9 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
                 step = batch+epoch*len(data_loader)
                 write_summary(writer, merged, step, f"running_stats")
 
-            if batch % 10 == 0:
+            if batch % 1000 == 0:
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
+                writer.add_figure("traing/img", fig, batch+epoch*total_batches)
                 plt.close(fig)
                 
             if batch % 5000 == 0:
@@ -82,10 +63,40 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, wri
                 write_summary(writer, merged, step, f"running_stats")
                 
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                writer.add_figure("traing/img", fig, batch+epoch*len(data_loader))
+                writer.add_figure("traing/img", fig, batch+epoch*total_batches)
                 plt.close(fig)
-                
-            batch += 1
+                    
+        batch += 1
+        
+        samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
+        #with torch.autograd.set_detect_anomaly(True):
+
+        samples = samples.cuda(non_blocking=True)
+        tgt_imgs = tgt_imgs.cuda(non_blocking=True)
+        targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
+        
+        outputs = model(samples, tgt_imgs, targets)
+
+        loss_dict, stats_dict = criterion(outputs, targets)
+        weight_dict = criterion.weight_dict
+        dn_weight_dict = criterion.dn_weight_dict
+        loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+        loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
+        
+        losses = loss_matching + loss_dn# + loss_dict["loss_contrastive"]
+        
+        loss_dict["loss"] = losses
+        loss_dict["loss_matching"] = loss_matching
+        loss_dict["loss_dn"] = loss_dn
+        stats_dict["loss"] = losses
+
+        optimizer.zero_grad(set_to_none=True)
+        losses.backward()
+        if max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        optimizer.step()
+        
+        loss_dict, stats_dict = {k: v.item() for k, v in loss_dict.items()}, {k: v.item() for k, v in stats_dict.items()}
         
     return stats_tracker.get_stats_avg()
 
@@ -139,3 +150,20 @@ def evaluate(model, criterion, postprocessor, data_loader, base_ds, device, epoc
         
             
     return stats_tracker.get_stats_avg(), coco_dict
+
+def dry_run(cfg, model, criterion, optimizer):
+    samples, tgt_imgs, targets = make_dummy_input(cfg.BATCH_SIZE, cfg.NUM_TGTS)
+    outputs = model(samples, tgt_imgs, targets)
+    loss_dict, stats_dict = criterion(outputs, targets)
+    weight_dict = criterion.weight_dict
+    dn_weight_dict = criterion.dn_weight_dict
+    loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+    loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
+    
+    losses = loss_matching + loss_dn
+
+    losses.backward()
+    if cfg.MAX_NORM > 0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.MAX_NORM)
+    
+    optimizer.zero_grad()

@@ -9,6 +9,8 @@ import argparse
 import torch.nn as nn
 import torchvision
 import matplotlib.pyplot as plt
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 from torchsummary import summary
 from torch.utils.tensorboard import SummaryWriter
 
@@ -37,7 +39,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "debug"
+        date = "debug_2000"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -100,10 +102,10 @@ def main(args):
     base_ds = get_coco_api_from_dataset(base_ds)
     
     # AVD
-    #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
+    #train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
     
     # GMU
-    #train_data_loader, test_data_loader = get_365_data_generator(cfg)
+    train_data_loader, test_data_loader = get_365_data_generator(cfg)
     
     
     #########################################################
@@ -117,7 +119,14 @@ def main(args):
         print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
         
         ################ Train ###############
-        stats = train_one_epoch(model, criterion, train_data_loader, optimizer, device, epoch, writer, save_dir)
+        stats = train_one_epoch(model=model,
+                                criterion=criterion,
+                                data_loader=train_data_loader,
+                                optimizer = optimizer,
+                                epoch= epoch,
+                                writer = writer,
+                                save_dir= save_dir,
+                                cfg = cfg)
         write_summary(writer, stats[0], epoch, "train_loss")
         write_summary(writer, stats[1], epoch, "train_stats")
         

@@ -16,6 +16,8 @@ from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 from torchvision.ops import box_convert
 
+from util.data_utils import set_worker_sharing_strategy
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
@@ -73,64 +75,67 @@ class Objects365Loader():
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        #try:
-        ### Load Image and Target data ###
-        file = self.dataset[idx]
-        file = file.decode("utf-8")
-        img_name = file.split(".")[0]
-        img_path = os.path.join(self.image_dir, img_name + ".jpg")
-        ann_path = os.path.join(self.labels_dir, file)
-        img_id = int(img_name.split("_")[-1])
-        with PIL.Image.open(img_path) as img:
-            img.load()
+        try:
+            ### Load Image and Target data ###
+            file = self.dataset[idx]
+            file = file.decode("utf-8")
+            img_name = file.split(".")[0]
+            img_path = os.path.join(self.image_dir, img_name + ".jpg")
+            ann_path = os.path.join(self.labels_dir, file)
+            img_id = int(img_name.split("_")[-1])
+            with PIL.Image.open(img_path) as img:
+                img.load()
 
-        with open(ann_path, 'r') as f:
-            annotations = f.readlines()
-            
-        base_target = self._format_annotation(annotations, img)
-        base_target["image_id"] = img_id
-        
-        ### Format Base Labels ###
-        img, base_target = self.format_base_lbls(img, base_target)
-        base_target.make_valid()
-        if self._base_transforms is not None:
-            img, base_target = self._base_transforms(img, base_target)
-            
-        ### Format Target Labels ###
-        img, tgt_imgs, tgt_target = self.format_tgt_lbls(img, base_target)
-        
-        if tgt_imgs is None:
-            tgt_img = torch.zeros(3, 224, 32)
-            tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
-            tgt_target.filter(None)
-            tgt_imgs = [tgt_img for _ in range(self.num_tgts)]
-            
-        tgt_target.make_valid()
-           
-        # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
-        if self._tgt_transforms is not None:
-            tgt_imgs_new = []
-            for tgt_img in tgt_imgs:
-                tgt_img, _ = self._tgt_transforms(tgt_img, None)
-                tgt_img, _ = self._inp_transforms(tgt_img, None)
+            with open(ann_path, 'r') as f:
+                annotations = f.readlines()
                 
-                tgt_imgs_new.append(tgt_img)
-            tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
-            tgt_target.normalize()
+            base_target = self._format_annotation(annotations, img)
+            base_target["image_id"] = img_id
+            
+            ### Format Base Labels ###
+            img, base_target = self.format_base_lbls(img, base_target)
+            base_target.make_valid()
+            if self._base_transforms is not None:
+                img, base_target = self._base_transforms(img, base_target)
+                
+            ### Format Target Labels ###
+            img, tgt_imgs, tgt_target = self.format_tgt_lbls(img, base_target)
+            
+            if tgt_imgs is None:
+                tgt_img = torch.zeros(3, 224, 32)
+                tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
+                tgt_target.filter(None)
+                tgt_imgs = [tgt_img for _ in range(self.num_tgts)]
+                
+
+            tgt_target.make_valid()
+            
+            # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
+            if self._tgt_transforms is not None:
+                tgt_imgs_new = []
+                for tgt_img in tgt_imgs:
+                    tgt_img, _ = self._tgt_transforms(tgt_img, None)
+                    tgt_img, _ = self._inp_transforms(tgt_img, None)
+                    
+                    tgt_imgs_new.append(tgt_img)
+                tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
+                tgt_target.normalize()
+                
+                
+            img, base_target = self._inp_transforms(img, base_target)
+        
+            ### Return the dictionary form of the target ###
+            tgt_target = tgt_target.as_dict
+            base_target.normalize()
+            base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
+            target = {**base_target, **tgt_target}
             
             
-        img, base_target = self._inp_transforms(img, base_target)
-    
-        ### Return the dictionary form of the target ###
-        tgt_target = tgt_target.as_dict
-        base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
-        target = {**base_target, **tgt_target}
+            return img, tgt_imgs, target
         
-        return img, tgt_imgs, target
-        
-        # except:
-        #     print("Fail to load image: ", idx)
-        #     return self.fail_save
+        except:
+            print("Fail to load image: ", idx)
+            return self.fail_save
         
     def format_base_lbls(self, image, target):
         assert isinstance(target, Target)
@@ -199,14 +204,22 @@ class Objects365Loader():
         
         return image, tgt_img, target
 
-    def collate_fn(self, batch):
-        batch = list(zip(*batch))
-        batch[0] = nested_tensor_from_tensor_list(batch[0])
-        tgts = [item for sublist in batch[1] for item in sublist]
-        batch[1] = nested_tensor_from_tensor_list(tgts)
-        return tuple(batch)
-
+class CustomBatch:
+    def __init__(self, batch):
+        zipped_batch = list(zip(*batch))
+        self.samples = nested_tensor_from_tensor_list(zipped_batch[0])
+        tgts = [item for sublist in zipped_batch[1] for item in sublist]
+        self.tgt_imgs = nested_tensor_from_tensor_list(tgts)
+        self.targets = zipped_batch[2]
+        
+    def pin_memory(self):
+        self.samples = self.samples.pin_memory()
+        self.tgt_imgs = self.tgt_imgs.pin_memory()
+        self.targets = [{k: v.pin_memory() for k, v in t.items()} for t in self.targets]
+        return self 
     
+def collate_wrapper(batch):
+    return CustomBatch(batch)
 
     
 def build_365_dataset(image_set, args):
@@ -214,8 +227,13 @@ def build_365_dataset(image_set, args):
     assert os.path.exists(root), "Please download 365 dataset to {}".format(root)
     
     inp_transform = make_input_transform()
-    base_transforms = make_base_transforms(image_set)
-    tgt_transforms = make_tgt_transforms(image_set, tgt_img_size=args.TGT_IMG_SIZE, tgt_img_max_size=args.TGT_MAX_IMG_SIZE)
+    base_transforms = make_base_transforms(image_set)   
+    tgt_transforms = make_tgt_transforms(image_set,
+                                         tgt_img_size=args.TGT_IMG_SIZE,
+                                         tgt_img_max_size=args.TGT_MAX_IMG_SIZE,
+                                         random_rotate=True,
+                                         use_sl_transforms=True,
+                                         )
     
     dataset = Objects365Loader(root_dir=root,
                                split = image_set,
@@ -232,15 +250,19 @@ def get_365_data_generator(args):
    
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    
+    pin_memory = args.PIN_MEMORY
 
     batch_sampler_train = torch.utils.data.BatchSampler(
         sampler_train, args.BATCH_SIZE, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
-                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS,
-                                   pin_memory=True)
+                                   collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS,
+                                   pin_memory=pin_memory,
+                                   worker_init_fn=set_worker_sharing_strategy)
     data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
-                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS,
-                                   pin_memory=True)
+                                 drop_last=False, collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS,
+                                   pin_memory=pin_memory,
+                                   worker_init_fn=set_worker_sharing_strategy)
     
     return data_loader_train, data_loader_val

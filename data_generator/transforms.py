@@ -173,6 +173,7 @@ def pad(image, target, padding):
 def rotate_90(image, target):
     assert isinstance(image, PIL.Image.Image)
     assert isinstance(target, Target) or target is None
+    w, h = image.size
     
     rotated_image = image.transpose(PIL.Image.ROTATE_90)
     
@@ -181,13 +182,13 @@ def rotate_90(image, target):
     elif len(target) == 0:
         return rotated_image, target
     else:
-        w, h = image.size
-
         target = copy.deepcopy(target)
 
-        boxes = target["boxes"]
-        boxes = boxes[:, [1, 0, 3, 2]] * torch.as_tensor([1, -1, 1, -1]) + torch.as_tensor([0, h, 0, h])
+        boxes = target["boxes"] #xyxy
+        boxes = boxes[:, [1, 2, 3, 0]] * torch.as_tensor([1, -1, 1, -1]) + torch.as_tensor([0, w, 0, w])
         target["boxes"] = boxes
+        target["size"] = target["size"][[1, 0]]
+        target["orig_size"] = target["orig_size"][[1, 0]]
 
         return rotated_image, target
 
@@ -216,8 +217,9 @@ def rotate(image, target, angle):
         return new_image, target
     
     whwh = torch.Tensor([w, h, w, h])
-    boxes = box_cxcywh_to_xyxy(target['boxes']) * whwh
-    new_boxes = boxes.clone()
+    boxes = target['boxes']
+    #boxes = box_cxcywh_to_xyxy(target['boxes']) * whwh
+    #new_boxes = boxes.clone()
 
     angle = np.radians(angle)
     alpha = np.cos(angle)
@@ -283,16 +285,17 @@ def rotate(image, target, angle):
     # import ipdb; ipdb.set_trace()
     new_image = new_image.resize((w, h))
     
-    #Resize boxes
-    new_boxes /= torch.Tensor([scale_x, scale_y, scale_x, scale_y])
-    new_boxes[:, 0] = torch.clamp(new_boxes[:, 0], 0, w)
-    new_boxes[:, 1] = torch.clamp(new_boxes[:, 1], 0, h)
-    new_boxes[:, 2] = torch.clamp(new_boxes[:, 2], 0, w)
-    new_boxes[:, 3] = torch.clamp(new_boxes[:, 3], 0, h)
+    # #Resize boxes
+    # new_boxes /= torch.Tensor([scale_x, scale_y, scale_x, scale_y])
+    # new_boxes[:, 0] = torch.clamp(new_boxes[:, 0], 0, w)
+    # new_boxes[:, 1] = torch.clamp(new_boxes[:, 1], 0, h)
+    # new_boxes[:, 2] = torch.clamp(new_boxes[:, 2], 0, w)
+    # new_boxes[:, 3] = torch.clamp(new_boxes[:, 3], 0, h)
     
-    target['boxes'] = box_xyxy_to_cxcywh(new_boxes).to(boxes.dtype) / (whwh + 1e-3)
+    # target['boxes'] = box_xyxy_to_cxcywh(new_boxes).to(boxes.dtype) / (whwh + 1e-3)
+    target['boxes'] = new_boxes
 
-    return new_image, new_boxes
+    return new_image, target
 
 class RandomCrop(object):
     def __init__(self, size):
@@ -302,6 +305,8 @@ class RandomCrop(object):
         region = T.RandomCrop.get_params(img, self.size)
         return crop(img, target, region)
 
+    def __str__(self) -> str:
+        return "RandomCrop"
 
 class RandomSizeCrop(object):
     def __init__(self, min_size: int, max_size: int, keep_boxes: bool = True):
@@ -315,6 +320,8 @@ class RandomSizeCrop(object):
         region = T.RandomCrop.get_params(img, [h, w])
         return crop(img, target, region, keep_boxes=self.keep_boxes)
 
+    def __str__(self) -> str:
+        return "RandomSizeCrop"
 
 class CenterCrop(object):
     def __init__(self, size):
@@ -327,6 +334,8 @@ class CenterCrop(object):
         crop_left = int(round((image_width - crop_width) / 2.))
         return crop(img, target, (crop_top, crop_left, crop_height, crop_width))
 
+    def __str__(self) -> str:
+        return "CenterCrop"
 
 class RandomHorizontalFlip(object):
     def __init__(self, p=0.5):
@@ -336,6 +345,9 @@ class RandomHorizontalFlip(object):
         if random.random() < self.p:
             return hflip(img, target)
         return img, target
+    
+    def __str__(self) -> str:
+        return "RandomHorizontalFlip"
 
 
 class RandomRotate(object):
@@ -347,6 +359,9 @@ class RandomRotate(object):
         angle = random.uniform(self.ang_min, self.ang_max)
         img, target = rotate(img, target, angle)
         return img, target
+    
+    def __str__(self) -> str:
+        return "RandomRotate"
 
 class Rotate(object):
     def __init__(self, angle=10) -> None:
@@ -355,6 +370,9 @@ class Rotate(object):
     def __call__(self, img, target):
         img, target = rotate(img, target, self.angle)
         return img, target
+    
+    def __str__(self) -> str:
+        return "Rotate"
 
 
 class RandomResize(object):
@@ -364,8 +382,16 @@ class RandomResize(object):
         self.max_size = max_size
 
     def __call__(self, img, target):
+        target = copy.deepcopy(target)
         size = random.choice(self.sizes)
-        return resize(img, target, size, self.max_size)
+        img, target = resize(img, target, size, self.max_size)
+        w, h = img.size
+        if w < h:
+            img, target = rotate_90(img, target)
+        return img, target
+    
+    def __str__(self) -> str:
+        return "RandomResize"
 
 class Resize(object):
     def __init__(self, size, max_size=None):
@@ -373,10 +399,13 @@ class Resize(object):
         self.max_size = max_size
 
     def __call__(self, img, target):
-        h, w = img.size
-        if h < w:
+        w, h = img.size
+        if w < h:
             img, target = rotate_90(img, target)
         return resize(img, target, self.size, self.max_size)
+    
+    def __str__(self) -> str:
+        return "Resize"
 
 class RandomPad(object):
     def __init__(self, max_pad):
@@ -386,6 +415,9 @@ class RandomPad(object):
         pad_x = random.randint(0, self.max_pad)
         pad_y = random.randint(0, self.max_pad)
         return pad(img, target, (pad_x, pad_y))
+    
+    def __str__(self) -> str:
+        return "RandomPad"
 
 
 class RandomSelect(object):
@@ -402,6 +434,9 @@ class RandomSelect(object):
         if random.random() < self.p:
             return self.transforms1(img, target)
         return self.transforms2(img, target)
+    
+    def __str__(self) -> str:
+        return "RandomSelect"
 
 class RejectSmall(object):
     """
@@ -425,6 +460,9 @@ class RejectSmall(object):
 
         return img, target
     
+    def __str__(self) -> str:
+        return "RejectSmall"
+    
 class RejectCrowded(object):
     """
     Rejects boxes with an area smaller than min_size
@@ -444,10 +482,16 @@ class RejectCrowded(object):
         if "masks" in target:
             target["masks"] = target["masks"][keep]
         return img, target
+    
+    def __str__(self) -> str:
+        return "RejectCrowded"
         
 class ToTensor(object):
     def __call__(self, img, target):
         return F.to_tensor(img), target
+    
+    def __str__(self) -> str:
+        return "ToTensor"
 
 
 class RandomErasing(object):
@@ -457,6 +501,9 @@ class RandomErasing(object):
 
     def __call__(self, img, target):
         return self.eraser(img), target
+    
+    def __str__(self) -> str:
+        return "RandomErasing"
 
 
 class Normalize(object):
@@ -474,6 +521,9 @@ class Normalize(object):
         target.normalize()
         
         return image, target
+    
+    def __str__(self) -> str:
+        return "Normalize"
 
 class DeNormalize(object):
     def __init__(self, mean, std):
@@ -491,10 +541,16 @@ class DeNormalize(object):
             t.mul_(s).add_(m)
             # The normalize code -> t.sub_(m).div_(s)
         return tensor.contiguous()
+    
+    def __str__(self) -> str:
+        return "DeNormalize"
 
 class NoTransform(object):
     def __call__(self, img, target):
         return img, target
+    
+    def __str__(self) -> str:
+        return "NoTransform"
 
 class Compose(object):
     def __init__(self, transforms):

@@ -62,7 +62,10 @@ class StatsTracker():
         for k, v in new_values.items():
             if k not in tracked_values:
                 tracked_values[k] = ValueStats()
-            tracked_values[k].update(v.item())
+            if isinstance(v, torch.Tensor):
+                tracked_values[k].update(v.item())
+            else:
+                tracked_values[k].update(v)
             
         return tracked_values
     

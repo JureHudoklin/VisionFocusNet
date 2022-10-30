@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import PIL
 from torchvision.transforms import ToTensor, ToPILImage, Resize
-from util.box_ops import box_inter_union, box_xyxy_to_cxcywh
+from util.box_ops import box_inter_union, box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
 from util.misc import nested_tensor_from_tensor_list
 from data_generator import transforms as T
 from data_generator import sltransforms as ST
@@ -39,27 +39,35 @@ def make_base_transforms(image_set):
 
     raise ValueError(f"unknown {image_set}")
 
-def make_tgt_transforms(image_set, tgt_img_size=224, tgt_img_max_size=448):
+def make_tgt_transforms(image_set,
+                        tgt_img_size=224,
+                        tgt_img_max_size=448,
+                        random_rotate = True,
+                        use_sl_transforms = True):
     if image_set == "train":
-        return T.Compose([
-            # T.RandomSelect(
-            #     T.RandomRotate(),
-            #     ),
-            T.Resize(tgt_img_size, max_size=tgt_img_max_size),
-            T.RandomHorizontalFlip(),
-
-            ST.RandomSelectMulti([
-                ST.AdjustBrightness(0.8, 1.2),
-                ST.AdjustContrast(0.8, 1.2),
-                # ST.LightingNoise(),
-                T.NoTransform(),
-            ]),
-        ])
+        tfs = []
+        if random_rotate:
+            tfs.append(
+                T.RandomSelect(
+                    T.RandomRotate(),
+                    T.NoTransform(),
+                ))
+        tfs.append(T.Resize(tgt_img_size, max_size=tgt_img_max_size))
+        tfs.append(T.RandomHorizontalFlip())
+        if use_sl_transforms:
+            tfs.append(
+                ST.RandomSelectMulti([
+                    ST.AdjustBrightness(0.8, 1.2),
+                    ST.AdjustContrast(0.8, 1.2),
+                    T.NoTransform(),
+                ]),
+            )
+        return T.Compose(tfs)
+    
     if image_set == "val":
         return T.Resize(tgt_img_size, max_size=tgt_img_max_size)
 
     raise ValueError(f"unknown {image_set}")
-
 
 def display_data(data):
     """ Given a batch of data it displays: Images, Tgt Images and bounding boxes
@@ -76,7 +84,7 @@ def display_data(data):
     Saved plot as "dataset_visualize.png"
     """
 
-    samples, samples_tgt, targets = data
+    samples, samples_tgt, targets = data.samples, data.tgt_imgs, data.targets
     imgs, masks = samples.decompose()
     imgs_tgt, _ = samples_tgt.decompose()
 
@@ -131,12 +139,51 @@ def display_data(data):
     plt.savefig('dataset_visualize.png', dpi=500)
 
 
-def collate_fn(self, batch):
+def collate_fn(batch):
     batch = list(zip(*batch))
     batch[0] = nested_tensor_from_tensor_list(batch[0])
-    batch[1] = nested_tensor_from_tensor_list(batch[1])
+    tgts = [item for sublist in batch[1] for item in sublist]
+    batch[1] = nested_tensor_from_tensor_list(tgts)
     return tuple(batch)
 
+class CustomBatch:
+    def __init__(self, batch):
+        zipped_batch = list(zip(*batch))
+        self.samples = nested_tensor_from_tensor_list(zipped_batch[0])
+        tgts = [item for sublist in zipped_batch[1] for item in sublist]
+        self.tgt_imgs = nested_tensor_from_tensor_list(tgts)
+        self.targets = zipped_batch[2]
+        
+    def pin_memory(self):
+        self.samples = self.samples.pin_memory()
+        self.tgt_imgs = self.tgt_imgs.pin_memory()
+        self.targets = [{k: v.pin_memory() for k, v in t.items()} for t in self.targets]
+        return self 
+    
+def collate_wrapper(batch):
+    return CustomBatch(batch)
+
+def set_worker_sharing_strategy(worker_id: int) -> None:
+    torch.multiprocessing.set_sharing_strategy("file_system")
+
+def make_dummy_input(batch_size, num_tgts, tgt_entry_size = 50, img_size = 800, img_max_size= 1333, tgt_size=224, tgt_max_size=448, device = "cuda"):
+    samples = torch.rand( 3, img_size, img_max_size).to(device) #
+    samples = nested_tensor_from_tensor_list([samples]*batch_size)
+    tgt_imgs = torch.rand(3, tgt_size, tgt_max_size).to(device)
+    tgt_imgs = nested_tensor_from_tensor_list([tgt_imgs]*batch_size*num_tgts)
+    tgt_dict = {"boxes": torch.rand(tgt_entry_size, 4).to(device),
+                "labels": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
+                "sim_labels": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
+                "classes": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
+                "iscrowd": torch.rand(tgt_entry_size).to(device),
+                "size": torch.tensor([img_size, img_max_size]).to(device),
+                "orig_size": torch.tensor([img_size, img_max_size]).to(device)}
+    
+    base_target = {f"base_{k}" : v for k, v in tgt_dict.items()}
+    target = {**tgt_dict, **base_target}  
+    target = [target]*batch_size
+
+    return samples, tgt_imgs, target
 
 class Target():
     """
@@ -263,20 +310,30 @@ class Target():
         return self.target
 
 
-def extract_tgt_img(image, boxes, num_tgts=3):
+def extract_tgt_img(image, boxes, num_tgts=3, add_noise=0.3):
     assert isinstance(image, PIL.Image.Image)
     assert isinstance(boxes, torch.Tensor)
 
     num_valid_boxes = boxes.shape[0]
     out_targets = []
     place_holder_img = ToPILImage()(torch.zeros(3, 64, 64))
+    w, h = image.size
 
     for i in range(num_tgts):
         if i >= num_valid_boxes:
             out_targets.append(place_holder_img)
             continue
         else:
-            out_targets.append(image.copy().crop(boxes[i].int().tolist()))
+            if add_noise > 0:
+                box = box_xyxy_to_cxcywh(boxes[i].clone())
+                box[-2:] = box[-2:] * (1. + torch.rand(2) * add_noise)
+                box = box_cxcywh_to_xyxy(box).long()
+                box[:2] = torch.clamp(box[:2], min=0)
+                box[3] = torch.clamp(box[3], max=h)
+                box[2] = torch.clamp(box[2], max=w)
+            else:
+                box = boxes[i].long()
+            out_targets.append(image.copy().crop(box.int().tolist()))
 
     return out_targets
 

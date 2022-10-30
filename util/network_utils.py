@@ -27,7 +27,15 @@ def save_model(model, optimizer, epoch, save_dir, name = None):
 
 def load_model(model, optimizer, load_dir, device, epoch=None):
     if epoch is None:
-        epoch = max([int(f.split("_")[1].split(".")[0]) for f in os.listdir(load_dir) if f.endswith(".pth")])
+        files = [f.split("_")[1].split(".")[0] for f in os.listdir(load_dir) if f.endswith(".pth")]
+        ep_num = []
+        ep_inter = []
+        for ep in files:
+            if ep.isdigit():
+                ep_num.append(int(ep))
+            else:
+                ep_inter.append(ep)
+        epoch = max(ep_num) if len(ep_num) > 0 else ep_inter[0]
     checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
