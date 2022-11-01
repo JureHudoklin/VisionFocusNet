@@ -85,8 +85,8 @@ class StatsTracker():
         return loss_dict, stats_dict
     
     def get_stats_current(self):
-        loss_dict = {k: v.value for k, v in self.tracked_losses.items()}
-        stats_dict = {k: v.value for k, v in self.tracked_stats.items()}
+        loss_dict = {k: v.avg for k, v in self.tracked_losses.items()}
+        stats_dict = {k: v.avg for k, v in self.tracked_stats.items()}
         return loss_dict, stats_dict
     
     def save_info(self, path, epoch, batch):

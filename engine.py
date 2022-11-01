@@ -1,5 +1,4 @@
 
-from random import sample
 import torch
 import numpy as np
 import time
@@ -29,7 +28,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
     for data in data_loader: #samples, tgt_imgs, targets
         if batch == 1:
             # --- Do a dry run to reserve the buffers ---
-            dry_run(cfg, model, criterion, optimizer)
+            #dry_run(cfg, model, criterion, optimizer)
             print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
         else:            
             stats_tracker.update(loss_dict, stats_dict)
@@ -47,7 +46,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
                 step = batch+epoch*len(data_loader)
                 write_summary(writer, merged, step, f"running_stats")
 
-            if batch % 1000 == 0:
+            if batch % 100 == 0:
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
                 writer.add_figure("traing/img", fig, batch+epoch*total_batches)
                 plt.close(fig)
@@ -83,7 +82,8 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
         loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
         
-        losses = loss_matching + loss_dn# + loss_dict["loss_contrastive"]
+        losses = loss_matching + loss_dn + loss_dict["loss_contrastive"]
+        #losses = loss_dict["loss_contrastive"]
         
         loss_dict["loss"] = losses
         loss_dict["loss_matching"] = loss_matching

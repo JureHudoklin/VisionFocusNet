@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.utils import checkpoint
 
-from torchvision.ops import generalized_box_iou, box_convert
+from torchvision.ops import generalized_box_iou, box_convert, roi_align
 
 from util import box_ops
 from util.misc import NestedTensor, nested_tensor_from_tensor_list
@@ -54,7 +54,6 @@ class DETR(nn.Module):
         self.class_embed = nn.Linear(self.hidden_dim, 2)
         self.sim_embed = nn.Linear(self.hidden_dim, 1)
         
-        #self.bbox_embed = MLP(self.hidden_dim, self.hidden_dim, 4, 3)
         self.two_stage = two_stage
         self.refpoint_embed = nn.Embedding(num_queries, 4)
         if self.two_stage:
@@ -66,9 +65,11 @@ class DETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss 
         
-        self.template_encoder = template_encoder
-        self.template_proj = nn.Linear(template_encoder.out_channels, self.hidden_dim)
-        #self.template_aligner = TemplateFeatAligner(self.hidden_dim)
+        self.template_encoder = template_encoder        
+        self.template_proj= MLP(self.template_encoder.out_channels, self.hidden_dim*2, self.hidden_dim, 3)
+        
+        self.contrastive_projection = nn.Linear(self.hidden_dim, self.hidden_dim*4)
+        
         
         # init prior_prob setting for focal loss
         #prior_prob = 0.01
@@ -79,7 +80,6 @@ class DETR(nn.Module):
         
         self.class_embed.bias.data = torch.tensor([0.01, 0.99])
         self.sim_embed.bias.data = torch.tensor([bias_value])
-        #torch.ones(num_classes) * bias_value
         
         self.dn_args = dn_args            
      
@@ -111,6 +111,7 @@ class DETR(nn.Module):
         
         
         # Check that input is a NestedTensor, if not, convert it
+        out = {}
         assert isinstance(samples, NestedTensor), "Input should be a Nested Tensor"
         bs = samples.tensors.shape[0]        
         
@@ -121,6 +122,7 @@ class DETR(nn.Module):
         pos = pos[-1]
 
         src, mask = features[-1].decompose()
+        src = self.input_proj(src)
         assert mask is not None
         bs, _, h, w = src.shape
         
@@ -128,13 +130,47 @@ class DETR(nn.Module):
         # Template Encoding #
         #####################
         #samples_targets, _ = samples_targets.decompose()
-        obj_enc: NestedTensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
-        # obj_enc = self.template_encoder(samples_targets) # [BS*num_tgts, C]
+        #obj_enc: NestedTensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
+        # obj_enc, _ = self.backbone(samples_targets)
+        # obj_enc, obj_mask = obj_enc[-1].decompose()
+        # obj_enc = self.input_proj(obj_enc)
+        # image_sizes = torch.stack([torch.sum(~obj_mask[:, :, 0], dim=1), torch.sum(~obj_mask[:, 0], dim=1)], dim=1) # N, 2
+        # bbox = torch.zeros((obj_enc.shape[0], 5), device = obj_enc.device)
+        # bbox[:, 3] = image_sizes[:, 0]
+        # bbox[:, 4] = image_sizes[:, 1]
+        # bbox[:, 0] = torch.arange(obj_enc.shape[0], device = obj_enc.device)
+        # obj_enc = roi_align(obj_enc, bbox, (4, 4)) # N, C, 1, 1
+        # obj_enc = F.max_pool2d(obj_enc, (4, 4))
+        # #obj_enc = nn.MaxPool2d(kernel_size = (obj_enc.shape[2], obj_enc.shape[3]))(obj_enc) # [bs, 256, 1, 1]
+        # obj_enc = obj_enc.view(obj_enc.shape[0], obj_enc.shape[1]) # [bs, 256]
+        # #obj_enc = self.template_proj(obj_enc) # [bs, 256]
+        
+        
+        obj_enc = self.template_encoder(samples_targets) # [BS*num_tgts, C]
         obj_enc = obj_enc.decompose()[0] # [BS*num_tgts, C]
         obj_enc = self.template_proj(obj_enc)# [BS*num_tgts, C]
-        ref_placeholder = torch.zeros((bs, self.hidden_dim), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
-        ref_placeholder = ref_placeholder.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
-        ref_placeholder = ref_placeholder.permute(1, 0, 2) # [NQ, BS, C]
+        
+        
+        out_feat = self.contrastive_projection(src.permute(0, 2, 3, 1))
+        #out_feat = out_feat / out_feat.norm(dim=-1, keepdim=True)
+        out_obj_enc = self.contrastive_projection(obj_enc)
+        out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
+        out["features"] = out_feat.permute(0, 3, 1, 2)
+        out["mask"] = mask
+        out["obj_encs"] = out_obj_enc
+        
+        #return out
+        
+        
+        obj_enc_tgt = obj_enc.view(bs, -1, self.hidden_dim) # [BS, num_tgts, C]
+        obj_enc_tgt = F.max_pool1d(obj_enc_tgt.permute(0, 2, 1), obj_enc_tgt.shape[1]).squeeze(-1) # [BS, C]
+        obj_enc_tgt = obj_enc_tgt.unsqueeze(0) # [1, BS, C]
+        
+        # ref_placeholder = torch.zeros((bs, self.hidden_dim), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
+        # ref_placeholder = ref_placeholder.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
+        # ref_placeholder = ref_placeholder.permute(1, 0, 2) # [NQ, BS, C]
+        
+
         
         ###############
         # Transformer #
@@ -147,16 +183,14 @@ class DETR(nn.Module):
             prepare_for_dn(targets,
                            self.dn_args,
                            ref_points_unsigmoid,
-                           ref_placeholder,
+                           obj_enc_tgt.repeat(self.num_queries, 1, 1).detach(),
                            bs,
                            self.training,
                            self.hidden_dim,
                            self.label_enc,
             )
             
-        
-
-        hs, reference_pts_layers = self.transformer(src = self.input_proj(src),
+        hs, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = src,
                                                     src_pos_embed = pos,
                                                     src_mask = mask,
                                                     tgt_point_embed = input_query_bbox,
@@ -168,14 +202,25 @@ class DETR(nn.Module):
         ###########
         # Outputs #
         ###########
-        outputs_class = self.class_embed(hs) # [num_layers, bs, num_queries, num_classes]
-        output_sim = self.sim_embed(hs) # [num_layers, bs, num_queries, 1]
+        obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(hs.shape[0], 1, hs.shape[2], 1) # [BS, NQ, 1, C]
+        outputs_class = self.class_embed(hs-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
+        output_sim = self.sim_embed(hs-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
         
         # DB post processing
         outputs_class, output_sim, outputs_coord, mask_dict = dn_post_process(outputs_class, output_sim, outputs_coord, mask_dict)
         
-        out = {"pred_class_logits": outputs_class[-1], "pred_sim_logits": output_sim[-1], "pred_boxes": outputs_coord[-1], "matching_boxes": outputs_coord[-2], "mask_dict": mask_dict}
+        out.update({"pred_class_logits": outputs_class[-1],
+               "pred_sim_logits": output_sim[-1],
+               "pred_boxes": outputs_coord[-1],
+               "matching_boxes": outputs_coord[-2],
+               "mask_dict": mask_dict}
+        )
+
+        
+        if self.two_stage:
+            out["obj_outputs"] = {"out_mem": out_mem[-1], "out_prop": out_prop[-1], "out_obj": out_obj[-1]}
+            out["obj_aux_outputs"] = [{"out_mem": out_mem[i], "out_prop": out_prop[i], "out_obj": out_obj[i]} for i in range(len(out_mem)-1)]
         
         if self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss(outputs_class, output_sim, outputs_coord)
@@ -217,6 +262,8 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.stats = {}
         self.bs = batch_size
+        
+        self.contrast_temp = 0.1
         
         self.dn_loss = DnLoss(batch_size=self.bs)
         
@@ -388,6 +435,76 @@ class SetCriterion(nn.Module):
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
+    
+    def loss_contrastive(self, outputs, targets):
+        ### Extract outputs ###
+        image_feat = outputs["features"] # [B, C, H, W]
+        mask = outputs["mask"] # [B, H, W]
+        device = image_feat.device
+        B, C, H, W = image_feat.shape
+        image_sizes = torch.stack([torch.sum(~mask[:, 0], dim=1), torch.sum(~mask[:, :, 0], dim=1)], dim=1) # B, 2 w,h
+        
+        obj_encs = outputs["obj_encs"] # [B*T, C]
+        T = obj_encs.shape[0] // B
+        
+        ### Extract from targets ###
+        boxes = [tgt["boxes"] for tgt in targets] # [B, T, 4]
+        classes = [tgt["classes"] for tgt in targets] # [B, T]
+        base_boxes = [tgt["base_boxes"] for tgt in targets] # [[N, 4], [G, 4], ...]
+        base_classes = [tgt["base_classes"] for tgt in targets] # [[N], [G], ...]
+
+        ### Calculate remaining ###
+        obj_encs_classes = [c[0] if len(c) > 0 else -1 for c in classes ] # [B]
+        obj_encs_classes =  torch.tensor(obj_encs_classes, device=device, dtype=torch.long).reshape(-1, 1) # [B, 1]
+        obj_encs_classes = obj_encs_classes.repeat(1, T).reshape(-1) # [B*T]
+        
+        valid_tgts = torch.cat([tgt["valid_targets"] for tgt in targets], dim=0) # [B*T] bool
+        # Filter out invalid targets
+        obj_encs = obj_encs[valid_tgts] # [B*T, C]
+        obj_encs_classes = obj_encs_classes[valid_tgts] # [B*T]
+        
+        ### Extract Features from image features ###
+        boxes_abs = [box_ops.box_cxcywh_to_xyxy(box) * torch.cat([image_sizes[i], image_sizes[i]], dim=0) for i, box in enumerate(base_boxes)] # [[N, 4], ...]
+
+        if len(boxes_abs) != self.bs:
+            raise ValueError("Batch size mismatch")
+        
+        roi = roi_align(image_feat, boxes_abs, (4, 4), 1.0) # (B*M, C, 4, 4)
+        roi = F.max_pool2d(roi, kernel_size=4) # (B*M, C, 1, 1)
+        roi = roi.view(-1, C) # (B*M, C)
+        roi = roi / torch.norm(roi, dim=1, keepdim=True) # (B*M, C)
+        
+        
+        ### Perform contrastive loss ###
+        contrast = torch.einsum("nc,mc->nm", obj_encs, roi) # [B*T, B*M]
+
+        contrast = torch.exp(contrast / self.contrast_temp)
+        
+        # Create a mask where classes match
+        base_classes = torch.cat(base_classes, dim=0) # [B*M]
+        mask_same = torch.where(base_classes == obj_encs_classes[:, None], torch.ones_like(contrast), torch.zeros_like(contrast)) # [B*T, B*M]
+        mask_different = torch.where(base_classes != obj_encs_classes[:, None], torch.ones_like(contrast), torch.zeros_like(contrast)) # [B*T, B*M]
+        
+        denum = (contrast*mask_different).sum(dim=1) # [B*T]
+        if (denum == 0).any():
+            print("Warning: Some denum are 0")
+            raise ValueError("Some denum are 0")
+        enum = contrast/(denum[:, None]) # [B*T, B*M]
+        enum = (torch.log(enum)*mask_same).sum(dim=1) # [B*T]žžžžžžžžžžžžžžž
+        
+        contrast_out = -1/mask_same.sum(dim=1) * enum # [B*T]
+        
+        contrast_out = contrast_out.sum() / B # [B*T]
+        # Check that loss is not nan or inf
+        if torch.isnan(contrast_out) or torch.isinf(contrast_out):
+            print("Warning: Contrast loss is nan or inf")
+            contrast_out = torch.tensor(0.0, device=device)
+        print(contrast_out)
+        
+        loss = {"loss_contrastive": contrast_out}
+        stats = {}
+        
+        return loss, stats
 
     def forward(self, outputs, targets):
         """ 
@@ -400,6 +517,19 @@ class SetCriterion(nn.Module):
         targets : list[dict] -- len(targets) == batch_size
             The expected keys in each dict depends on the losses applied, see each loss" doc
         """
+        # Compute all the requested losses
+        losses = {}
+        stats = {}
+        
+        ### CONTRASTIVE LOSS ###
+        
+        loss, stats = self.loss_contrastive(outputs, targets)
+        
+        losses.update(loss)
+        stats.update(stats)
+        
+        
+        
         outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -411,9 +541,7 @@ class SetCriterion(nn.Module):
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
-        # Compute all the requested losses
-        losses = {}
-        stats = {}
+        
         for loss in self.losses:
             l_dict, s_dict = self.get_loss(loss, outputs, targets, indices, num_boxes)
             losses.update(l_dict)
@@ -438,6 +566,11 @@ class SetCriterion(nn.Module):
             aux_num = len(outputs["aux_outputs"])
             dn_losses = self.dn_loss(outputs["pred_class_logits"], outputs["pred_sim_logits"], outputs["pred_boxes"], mask_dict, aux_num)
             losses.update(dn_losses)
+            
+            
+        ################
+        ### OBJ LOSS ###
+        ################
         
         return losses, stats
         
@@ -487,7 +620,6 @@ class PostProcessor(nn.Module):
         return results
 
 def build_model(args, device):
-    
     # Create the model
     num_classes = 2 # COCO dataset
 
@@ -495,7 +627,10 @@ def build_model(args, device):
 
     transformer = build_transformer(args)
     
-    template_encoder = build_template_encoder(args)
+    if args.TEMPLATE_ENCODER["SAME_AS_BACKBONE"]:
+        template_encoder = backbone
+    else:
+        template_encoder = build_template_encoder(args)
 
     model = DETR(
         backbone,

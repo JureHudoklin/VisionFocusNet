@@ -177,7 +177,8 @@ def make_dummy_input(batch_size, num_tgts, tgt_entry_size = 50, img_size = 800, 
                 "classes": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
                 "iscrowd": torch.rand(tgt_entry_size).to(device),
                 "size": torch.tensor([img_size, img_max_size]).to(device),
-                "orig_size": torch.tensor([img_size, img_max_size]).to(device)}
+                "orig_size": torch.tensor([img_size, img_max_size]).to(device),
+                "valid_targets": torch.ones(3, dtype=torch.bool).to(device),}
     
     base_target = {f"base_{k}" : v for k, v in tgt_dict.items()}
     target = {**tgt_dict, **base_target}  
@@ -192,7 +193,7 @@ class Target():
     """
 
     def __init__(self, **kwargs):
-        self.img_prop = ["size", "orig_size", "image_id", "scene"]
+        self.img_prop = ["size", "orig_size", "image_id", "scene", "valid_targets"]
         self.tgt_prop = ["boxes", "labels", "classes",
                          "sim_labels", "iscrowd", "area"]
 
@@ -292,6 +293,7 @@ class Target():
         self.target["orig_size"] = self.target["orig_size"].long()
         self.target["image_id"] = self.target["image_id"].long()
         self.target["boxes"] = self.target["boxes"].reshape(-1, 4).float()
+        self.target["valid_targets"] = self.target["valid_targets"].bool()
 
     @property
     def is_valid(self):

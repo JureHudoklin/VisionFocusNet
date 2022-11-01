@@ -95,10 +95,10 @@ class GMULoader():
                         print(f"Error: Object {name} not in instance_ids.txt")
                         continue
                     label = self.instance_ids_inversed[name]
-                    if self.split == "val" and label in self.train_obj_list:
-                        continue
-                    elif self.split == "train" and label in self.val_obj_list:
-                        continue
+                    # if self.split == "val" and label in self.train_obj_list:
+                    #     continue
+                    # elif self.split == "train" and label in self.val_obj_list:
+                    #     continue
                     diff = int(obj.find("difficult").text)
                     if diff > self.difficulty_threshold:
                         continue
@@ -185,7 +185,6 @@ class GMULoader():
         
         ### Return the dictionary form of the target ###
         tgt_target = tgt_target.as_dict
-        base_target.normalize()
         base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
         target = {**base_target, **tgt_target}
         
@@ -197,6 +196,7 @@ class GMULoader():
         
         image_id = int(target.image_id.replace("rgb_", ""))
         target["image_id"] = image_id
+        target["valid_targets"] = torch.zeros(self.num_tgts, dtype=torch.bool)
         
         return img, target
     
@@ -216,6 +216,7 @@ class GMULoader():
         
         # Set similarity indices:
         tgt_imgs = self._get_tgt_img(selected_class)
+        tgt_target["valid_targets"][:len(tgt_imgs)] = True
         return img, tgt_imgs, tgt_target
         
     def _get_tgt_img(self, obj_id):

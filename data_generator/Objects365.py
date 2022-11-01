@@ -126,10 +126,8 @@ class Objects365Loader():
         
             ### Return the dictionary form of the target ###
             tgt_target = tgt_target.as_dict
-            base_target.normalize()
             base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
             target = {**base_target, **tgt_target}
-            
             
             return img, tgt_imgs, target
         
@@ -142,6 +140,7 @@ class Objects365Loader():
         
         target.calc_area()
         target.calc_iscrowd()
+        target["valid_targets"] = torch.zeros(len(target), dtype=torch.bool)
 
         return image, target
 
@@ -200,6 +199,7 @@ class Objects365Loader():
         tgt_box = target["boxes"][min_crowd_idx] # # [N, 4] x1 y1 x2 y2
         tgt_box = tgt_box.reshape(-1, 4)
         
+        target["valid_targets"][0:len(tgt_box)] = True
         tgt_img = extract_tgt_img(image, tgt_box, num_tgts = self.num_tgts)
         
         return image, tgt_img, target

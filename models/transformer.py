@@ -24,7 +24,7 @@ from torch import nn, Tensor
 from .position_encoding import PositionEmbeddingSineChannel
 from .attention import SimpleMultiheadAttention, MultiheadAttention_x
 from .layer_util import MLP, _get_activation_fn, _get_clones, inverse_sigmoid
-from .feature_alignment import TemplateFeatAligner
+from .feature_alignment import TemplateFeatAligner, TemplateFeatAligner_v2, TemplateFeatAligner_v4, TemplateFeatAligner_v5
 
 
 class Transformer(nn.Module):
@@ -57,10 +57,10 @@ class Transformer(nn.Module):
                                                 dropout, activation)
         decoder_norm = nn.LayerNorm(d_model)
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
-                                          d_model=d_model, query_dim=query_dim, query_scale_type=query_scale_type,
-                                          modulate_hw_attn=modulate_hw_attn,
-                                          bbox_embed_diff_each_layer=bbox_embed_diff_each_layer,
-                                          look_forward_twice=look_forward_twice,)
+                                            d_model=d_model, query_dim=query_dim, query_scale_type=query_scale_type,
+                                            modulate_hw_attn=modulate_hw_attn,
+                                            bbox_embed_diff_each_layer=bbox_embed_diff_each_layer,
+                                            look_forward_twice=look_forward_twice,)
 
         #self._reset_parameters()
         assert query_scale_type in ['cond_elewise', 'cond_scalar']
@@ -69,7 +69,8 @@ class Transformer(nn.Module):
         if two_stage:
             self.enc_output = nn.Linear(d_model, d_model)
             self.enc_output_norm = nn.LayerNorm(d_model)
-            self.enc_output_proposals = nn.Linear(d_model, 1)
+            self.objectness_output_proposals = nn.Linear(d_model, 2)
+            self.delta_bbox = nn.Linear(d_model, 4)
 
         self.d_model = d_model
         self.nhead = nhead
@@ -88,15 +89,14 @@ class Transformer(nn.Module):
         nn.init.constant_(self.decoder.bbox_embed.layers[-1].bias.data, 0)
         
         
-    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
+    def gen_encoder_output_proposals(self, memory, memory_padding_mask):
         """
         memory : Tensor [HW, B, C]
         memory_padding_mask : Tensor [B, HW]
         spatial_shapes : tuple(H, W)
         """
-        S, B, C = memory.shape
-        H, W = spatial_shapes
-        _cur = 0
+        B, C, H, W = memory.shape
+        memory = memory.reshape(B, C, -1).permute(2, 0, 1) # [HW, B, C]
         lvl = 0
         
         mask_flatten_ = memory_padding_mask.view(B, H, W, 1) # # B, H, W, 1
@@ -135,41 +135,49 @@ class Transformer(nn.Module):
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
         image_sizes =torch.stack([torch.sum(~src_mask[:, :, 0], dim=1), torch.sum(~src_mask[:, 0], dim=1)], dim=1) # N, 2
-        src = src.flatten(2).permute(2, 0, 1)
-        src_pos_embed = src_pos_embed.flatten(2).permute(2, 0, 1) # HWxNxC
-        src_mask = src_mask.flatten(1) # BxHW
-        
+                
         ##################
         ### Encoder ######
         ##################
-        memory = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed) # HWxNxC
+        memories = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed) # HWxNxC
+        out_mem = []
+        out_prop = []  
+        out_obj = []     
+        topk = self.num_queries
         
-        
-        ##################
-        ### Feature Alignment
-        ##################
-        memory_img = memory.view(h, w, bs, c).permute(2, 3, 0, 1) # NxCxHxW
-        tgts = tgts.view(-1, bs, c).permute(1, 0, 2) # N x num_tgts x C
-        aligned_tgt_label_embed = self.feature_alignment(memory_img, tgts, tgt_point_embed.sigmoid().permute(1,0,2), image_sizes).permute(1, 0, 2) # QxNxC
-        
-        
+        ### For each memory perform 1: Bounding Box Proposals, 2: Contrastive loss ###
         if self.two_stage:
-            output_memory, output_proposals = self.gen_encoder_output_proposals(memory, src_mask, (h, w)) # HW, B, C,-- N, H*W, 4
-            output_proposals = output_proposals.permute(1, 0, 2) # HW, B, 4
+            for memory in memories:
+                output_memory, output_proposals = self.gen_encoder_output_proposals(memory, src_mask, (h, w)) # HW, B, C,-- B, HW, 4
+                output_proposals = output_proposals.permute(1, 0, 2) # HW, B, 4
+                output_memory = output_memory.permute(1, 0, 2) # HW, B, C
+                
+                # Get top proposals
+                output_memory_object = self.objectness_output_proposals(output_memory).softmax() # HW, B, 2
+                output_prop_topk, output_prop_topk_idx = output_memory_object[:, :, 1].topk(topk, dim=0) # topk, B
+                        
+                # Get top proposals topk, B, 4
+                output_proposals_filtered = torch.gather(output_proposals, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, 4))
+                output_memory_filtered = torch.gather(output_memory, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, output_memory.shape[-1])) # topk, B, C
+                output_obj_filtered = torch.gather(output_memory_object, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, output_memory_object.shape[-1]))
+                
+                # Modify the proposals based on the features  topk, B, 4
+                output_proposals_filtered = output_proposals_filtered + self.delta_bbox(output_memory_filtered)
+                
+                out_mem.append(output_memory_filtered)
+                out_prop.append(output_proposals_filtered)
+                out_obj.append(output_obj_filtered)
+                
+            out_mem = torch.stack(output_memory_filtered, dim=0) # L, topk, B, C
+            out_prop = torch.stack(output_proposals_filtered, dim=0) # L, topk, B, 4
+            out_obj = torch.stack(output_obj_filtered, dim=0) # L, topk, B, 2
             
-            # Get top proposals
-            output_memory = self.enc_output_proposals(output_memory).squeeze(-1) # HW, B
-            topk = self.num_queries
-            output_prop_topk, output_prop_topk_idx = torch.topk(output_memory, topk, dim=0) # topk, B
+            tgt_point_embed[-topk:, :, :] = out_prop[-1] # topk, B, 4
             
-            # Get top proposals topk, B, 4
-            output_proposals = torch.gather(output_proposals, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, 4))
-            tgt_point_embed[-topk:, :, :] = output_proposals # topk, B, 4
-            
-
-        hs, references = self.decoder(aligned_tgt_label_embed, memory, memory_key_padding_mask=src_mask,
+        memory = memories[-1]
+        hs, references = self.decoder(tgt_label_embed, memory, tgts, memory_key_padding_mask=src_mask,
                           pos=src_pos_embed, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
-        return hs, references
+        return hs, references, memories, out_prop, out_obj
 
 
 
@@ -179,26 +187,33 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
-        #self.query_scale = MLP(d_model, d_model, d_model, 2)
+        self.query_scale = MLP(d_model, d_model, d_model, 2)
         self.norm = norm
 
-    def forward(self, src, # [num_feat, bs, C]
+    def forward(self, src, # [bs, c, h, w]
                 attn_mask: Optional[Tensor] = None, 
-                src_key_padding_mask: Optional[Tensor] = None, # [bs, num_feat]
-                pos: Optional[Tensor] = None): # [num_feat, bs, C]
+                src_key_padding_mask: Optional[Tensor] = None, # [B, H, W]
+                pos: Optional[Tensor] = None): # [B, C, H, W]
+        
+        b, c, h, w = src.shape
+        src = src.flatten(2).permute(2, 0, 1) # [num_feat, bs, C]
+        pos = pos.flatten(2).permute(2, 0, 1) # HWxBxC
+        src_key_padding_mask = src_key_padding_mask.flatten(1) # BxHW
+        
         output = src
+        outputs = []
 
         for layer_id, layer in enumerate(self.layers):
             # rescale the content and pos sim
-            #pos_scales = self.query_scale(output) # [num_feat, bs, d_model]
-            output: torch.Tensor = checkpoint.checkpoint(layer, output, attn_mask, src_key_padding_mask, pos)
-            # output = layer(output, attn_mask=attn_mask,
-            #                src_key_padding_mask=src_key_padding_mask, pos=pos) #*pos_scales
+            pos_scales = self.query_scale(output) # [num_feat, bs, d_model]
+            #output: torch.Tensor = checkpoint.checkpoint(layer, output, attn_mask, src_key_padding_mask, pos*pos_scales)
+            output = layer(output, attn_mask=attn_mask,
+                           src_key_padding_mask=src_key_padding_mask, pos=pos*pos_scales) #*pos_scales
+            if self.norm is not None:
+                output = self.norm(output)
+            outputs.append(output.permute(1, 2, 0).view(b, c, h, w))
 
-        if self.norm is not None:
-            output = self.norm(output)
-
-        return output
+        return torch.stack(outputs, dim=0) # [num_layers, bs, c, h, w]
 
 
 
@@ -278,6 +293,8 @@ class TransformerDecoder(nn.Module):
         self.bbox_embed =  MLP(d_model, d_model, 4, 3)
         
         
+        self.feature_alignment = TemplateFeatAligner_v5(d_model, n_heads = 8)
+        
         self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
 
         self.gen_sineembed = PositionEmbeddingSineChannel(d_model//2) # temperature=20
@@ -296,14 +313,24 @@ class TransformerDecoder(nn.Module):
 
     def forward(self,
                 tgt, # [nq, bs, d_model]
-                memory, # [num_feat, bs, d_model]
+                memory, # [bs, c, h, w]
+                tgt_encodings: Tensor, # [bs*num_tgts, d_model]
                 tgt_mask: Optional[Tensor] = None, # [num_queries, num_queries]
                 memory_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None,
-                memory_key_padding_mask: Optional[Tensor] = None,
+                memory_key_padding_mask: Optional[Tensor] = None, # [bs, h*w]
                 pos: Optional[Tensor] = None,
-                reference_unsigmoid: Optional[Tensor] = None, # num_queries, bs, query_dim
+                reference_unsigmoid: Optional[Tensor] = None, #bs, query_dim, 4
                 ):
+        
+        bs, c, h, w = memory.shape
+        image_sizes =torch.stack([torch.sum(~memory_key_padding_mask[:, :, 0], dim=1), torch.sum(~memory_key_padding_mask[:, 0], dim=1)], dim=1) # N, 2
+        
+        memory_flat = memory.flatten(2).permute(2, 0, 1) # [num_feat, bs, C]
+        pos = pos.flatten(2).permute(2, 0, 1) # HWxBxC
+        memory_key_padding_mask = memory_key_padding_mask.flatten(1) # BxHW
+        
+        
         output = tgt
         reference_points = reference_unsigmoid.sigmoid()
         intermediate = []
@@ -335,7 +362,7 @@ class TransformerDecoder(nn.Module):
                 query_sine_embed[..., :self.d_model // 2] *= (refHW_cond[..., 1] / obj_size[..., 1]).unsqueeze(-1)
 
             output = layer(output,
-                           memory,
+                           memory_flat,
                            tgt_mask=tgt_mask,
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,
@@ -363,7 +390,8 @@ class TransformerDecoder(nn.Module):
                 b = b_pred.detach()
                 ref_point_layers.append(b_pred)
                 a = b
-
+            #output_aligned = self.feature_alignment(memory, tgt_encodings, b.permute(1,0,2), image_sizes).permute(1, 0, 2)
+            #output_aligned = self.feature_alignment(output.permute(1,0,2), tgt_encodings).permute(1, 0, 2)
             
             intermediate.append(self.norm(output))
 
@@ -457,7 +485,6 @@ class TransformerDecoderLayer(nn.Module):
                               attn_mask=tgt_mask,
                               key_padding_mask=tgt_key_padding_mask)[0]
         # ========== End of Self-Attention =============
-
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
 

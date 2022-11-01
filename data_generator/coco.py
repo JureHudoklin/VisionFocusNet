@@ -15,7 +15,7 @@ import data_generator.transforms as T
 import data_generator.sltransforms as ST
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
-from util.data_utils import make_base_transforms, make_tgt_transforms, Target, extract_tgt_img
+from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target, extract_tgt_img, collate_wrapper, set_worker_sharing_strategy
 
 class CocoLoader(torchvision.datasets.CocoDetection):
     """`MS Coco Detection <http://mscoco.org/dataset/#detections-challenge2016>`_ Dataset.
@@ -30,20 +30,27 @@ class CocoLoader(torchvision.datasets.CocoDetection):
     def __init__(self, 
                  img_dir,
                  ann_file,
-                 transforms = None,
+                 inp_transforms = None,
+                 base_transforms = None,
                  tgt_transforms = None,
                  output_normalize = True,
                  num_tgts = 3,
+                 area_limit = 500,
                  ):
         super(CocoLoader, self).__init__(img_dir, ann_file)
         
         
         
-        self._transforms = transforms
+        self._inp_transforms = inp_transforms
+        self._base_transforms = base_transforms
         self._tgt_transforms = tgt_transforms
+        
         self.output_normalize = output_normalize
         self.num_tgts = num_tgts
-        self.prepare = CocoFormat(num_tgts=self.num_tgts)
+        self.area_limit = area_limit
+        
+        self.exclude_classes = {}
+        self.same_classes = {}
         
         
     def __len__(self):
@@ -54,78 +61,47 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         img, target = super(CocoLoader, self).__getitem__(idx)
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
-        img, tgt_imgs, target = self.prepare(img, target)
-            
-        if tgt_imgs is None:
-            tgt_img = torch.zeros(3, 224, 224)
-            tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
-            new_target = Target()
-            new_target.update(**{"size" : target["size"], "image_id" : target["image_id"], "orig_size" : target["orig_size"]})
-            new_target["sim_labels"] = torch.zeros_like(new_target["labels"])
-            target = new_target
-            tgt_imgs = [tgt_img for _ in range(self.num_tgts)]
         
-        if self._transforms is not None:
-            img, target = self._transforms(img, target)
+        ### Format Base Labels ###
+        img, base_target = self.format_base_lbls(img, target)
+        base_target.make_valid()
+        if self._base_transforms is not None:
+            img, base_target = self._base_transforms(img, base_target)
+            
+        ### Format Target Labels ###  
+        img, tgt_imgs, tgt_target = self.format_tgt_lbls(img, base_target)
+        
+        if tgt_imgs is None:
+            tgt_img = torch.zeros(3, 224, 32)
+            tgt_img = torchvision.transforms.ToPILImage()(tgt_img)
+            tgt_target.filter(None)
+            tgt_imgs = [tgt_img for _ in range(self.num_tgts)]
+                
+        tgt_target.make_valid()
+            
+        # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
         if self._tgt_transforms is not None:
             tgt_imgs_new = []
             for tgt_img in tgt_imgs:
-                w, h = tgt_img.size
-                tgt_img, _ = self._tgt_transforms(tgt_img, Target(**{"size" : torch.as_tensor([h, w]), "orig_size" : torch.as_tensor([h, w])}))
+                tgt_img, _ = self._tgt_transforms(tgt_img, None)
+                tgt_img, _ = self._inp_transforms(tgt_img, None)
+                
                 tgt_imgs_new.append(tgt_img)
             tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
-                        
-        target.make_valid()
-        target = target.as_dict
-        return img, tgt_imgs, target
+            tgt_target.normalize()
             
-
-    def collate_fn(self, batch):
-        batch = list(zip(*batch))
-        batch[0] = nested_tensor_from_tensor_list(batch[0])
-        tgts = [item for sublist in batch[1] for item in sublist]
-        batch[1] = nested_tensor_from_tensor_list(tgts)
-        return tuple(batch)
-
-    def show(self, img, target):
-        """
-        Plots the image, and bounding boxes of the entry with the given index.
-
-        Parameters
-        ----------
-        index : int
-            Index of the entry.
-        """
-        
-        # Plot scene Image
-        plt.imshow(img.permute(1, 2, 0))
-        
-        boxes = target['boxes']
-        # Plot bounding boxes of the obects
-        for i, box in enumerate(boxes):
-            cx, cy, w, h = box
-            x1, y1, x2, y2 = cx-w/2, cy-h/2, cx+w/2, cy+h/2
-            x, y, w, h = int(x1*img.shape[2]), int(y1*img.shape[1]), int(w*img.shape[2]), int(h*img.shape[1])
             
-            obj_id =target["labels"][i]
-            
-            plt.gca().add_patch(plt.Rectangle((x, y), w, h, fill=False, edgecolor='red', linewidth=2))
-            plt.gca().text(x, y, f"{obj_id}", color='red', fontsize=12)  
-        plt.title("Scene")
-        
-        plt.savefig(f"{target['image_id']}.png")
-
-
-class CocoFormat(object):
-    def __init__(self, num_tgts = 3):
-        self.num_tgts = num_tgts
-        self.same_classes = {47:"banana", 48:"apple", 50:"orange", 51:"broccoli", 52:"carrot"}
-        self.simmilar_classes = {} #TO do
-        self.exclude_classes = {}#{1:"people"}
-        self.area_limit = 600
-        pass
+        img, base_target = self._inp_transforms(img, base_target)
     
-    def prepare_base_labels(self, image, target):
+        ### Return the dictionary form of the target ###
+        tgt_target = tgt_target.as_dict
+        base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
+        target = {**base_target, **tgt_target}
+        
+        return img, tgt_imgs, target
+        
+            
+    def format_base_lbls(self, image, target):
         w, h = image.size
 
         target_new = Target()
@@ -162,15 +138,18 @@ class CocoFormat(object):
         target_new.calc_iscrowd()
         target_new["orig_size"] = torch.as_tensor([int(h), int(w)])
         target_new["size"] = torch.as_tensor([int(h), int(w)])
+        target_new["valid_targets"] = torch.zeros(self.num_tgts, dtype=torch.bool)
     
         return image, target_new
 
-    def prepare_target_img(self, image, target):
-        assert isinstance(target, Target)
+    def format_tgt_lbls(self, image, base_target):
+        assert isinstance(base_target, Target)
+        target = copy.deepcopy(base_target)
         if len(target) == 0:
             return image, None, target
         
         classes = target["classes"]
+
         unique_classes = torch.unique(classes)
         unique_classes_list = unique_classes.tolist()
         random.shuffle(unique_classes_list)
@@ -194,45 +173,35 @@ class CocoFormat(object):
             else:
                 break
 
-        if len(same_class_idx) == 0:
+        target.filter(same_class_idx)
+        if len(target) == 0:
             return image, None, target
         
         # Get all labels of the same class
-        target.filter(same_class_idx)
-        new_target = copy.deepcopy(target)
-        new_target.update(**{"labels": torch.ones_like(new_target["classes"])})
-        _, min_crowd_idx = torch.min(new_target["iscrowd"], dim=0)
+        target.update(**{"labels": torch.ones_like(target["labels"])})
+        _, min_crowd_idx = torch.min(target["iscrowd"], dim=0)
 
         # Set similarity indices:
         if same_class_idx.shape[0] >= 3:
             tgt_num = random.randint(1, 3)
-            min_crowd_idx = torch.topk(new_target["iscrowd"], tgt_num, largest=False)[1]
+            min_crowd_idx = torch.topk(target["iscrowd"], tgt_num, largest=False)[1]
         else:
             tgt_num = 1
             
-        similarity_idx = torch.zeros_like(new_target["labels"])
+        similarity_idx = torch.zeros_like(target["labels"])
         similarity_idx[min_crowd_idx] = 1
         if class_id in self.same_classes:
             similarity_idx[:] = 1
-        new_target.update(**{"sim_labels" : similarity_idx})
+        target.update(**{"sim_labels" : similarity_idx})
        
-        tgt_box = new_target["boxes"][min_crowd_idx] # # [N, 4] x1 y1 x2 y2
+        tgt_box = target["boxes"][min_crowd_idx] # # [N, 4] x1 y1 x2 y2
         tgt_box = tgt_box.reshape(-1, 4)
         
-        tgt_img = extract_tgt_img(image, tgt_box, self.num_tgts) # [list of PIL images]
         
-        return image, tgt_img, new_target
-       
-    
-
-    def __call__(self, image, target):
-        image, target = self.prepare_base_labels(image, target)
-        if len(target["labels"]) == 0:
-            return image, None, target
-        image, tgt_image, target = self.prepare_target_img(image, target)
-        return image, tgt_image, target
-
-
+        target["valid_targets"][0:len(tgt_box)] = True
+        tgt_img = extract_tgt_img(image, tgt_box, num_tgts = self.num_tgts)
+        
+        return image, tgt_img, target
 
 
 def build_dataset(image_set, args):
@@ -243,7 +212,22 @@ def build_dataset(image_set, args):
         "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/instances_val2017.json")),
     }
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoLoader(img_folder, ann_file, transforms=make_base_transforms(image_set), tgt_transforms = make_tgt_transforms(image_set), num_tgts=args.NUM_TGTS)
+    
+    inp_transform = make_input_transform()
+    base_transforms = make_base_transforms(image_set)   
+    tgt_transforms = make_tgt_transforms(image_set,
+                                         tgt_img_size=args.TGT_IMG_SIZE,
+                                         tgt_img_max_size=args.TGT_MAX_IMG_SIZE,
+                                         random_rotate=True,
+                                         use_sl_transforms=True,
+                                         )
+    
+    dataset = CocoLoader(img_folder, ann_file,
+                         base_transforms = base_transforms,
+                         tgt_transforms = tgt_transforms,
+                         inp_transforms = inp_transform,
+                         num_tgts=args.NUM_TGTS,
+                         area_limit = args.TGT_MIN_AREA,)
     return dataset
 
 def get_coco_data_generator(args):
@@ -280,9 +264,11 @@ def get_coco_data_generator(args):
         sampler_train, args.BATCH_SIZE, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
-                                   collate_fn=dataset_train.collate_fn, num_workers=args.NUM_WORKERS, pin_memory=args.PIN_MEMORY)
+                                   collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=args.PIN_MEMORY,
+                                   worker_init_fn=set_worker_sharing_strategy)
     data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
-                                 drop_last=False, collate_fn=dataset_val.collate_fn, num_workers=args.NUM_WORKERS, pin_memory=args.PIN_MEMORY)
+                                 drop_last=False, collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=args.PIN_MEMORY,
+                                 worker_init_fn=set_worker_sharing_strategy)
     
     return data_loader_train, data_loader_val
 
