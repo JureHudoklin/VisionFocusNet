@@ -78,30 +78,31 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             ax.text(x, y, f"SIM:{obj_sim}", color="green", fontsize=4)
         
         # Plot Predicted Boxes
-        top_k = 5
-        class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
-        sim_logits = outputs["pred_sim_logits"][b].sigmoid() # [Q, 1]
-        
-        class_val, class_idx = class_logits[:, 1].topk(top_k) # [N]
-        sim_val = sim_logits[class_idx]  # [N]
-        for i in range(top_k):
-            id = class_idx[i].item() # Idx of the prediction
-            c_vl = class_val[i].item() # Class score
-            s_vl = sim_val[i].item() # Sim score
-            obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
-            if obj_bg == 0:
-                edgecolor = "black"
-                alpha = 0.3
-            else:
-                edgecolor = "red"
-                alpha = 1
-
-            cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
-
-            x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
-            ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=4, alpha = alpha)
+        if "pred_class_logits" in outputs and "pred_sim_logits" in outputs and "pred_boxes" in outputs:
+            top_k = 5
+            class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
+            sim_logits = outputs["pred_sim_logits"][b].sigmoid() # [Q, 1]
             
+            class_val, class_idx = class_logits[:, 1].topk(top_k) # [N]
+            sim_val = sim_logits[class_idx]  # [N]
+            for i in range(top_k):
+                id = class_idx[i].item() # Idx of the prediction
+                c_vl = class_val[i].item() # Class score
+                s_vl = sim_val[i].item() # Sim score
+                obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
+                if obj_bg == 0:
+                    edgecolor = "black"
+                    alpha = 0.3
+                else:
+                    edgecolor = "red"
+                    alpha = 1
+
+                cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
+
+                x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
+                ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
+                ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=4, alpha = alpha)
+                
             
         ### Plot Target Objects ###
         for j in range(N_t):

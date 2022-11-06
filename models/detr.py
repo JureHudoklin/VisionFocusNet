@@ -14,13 +14,13 @@ from torchvision.ops import generalized_box_iou, box_convert, roi_align
 from util import box_ops
 from util.misc import NestedTensor, nested_tensor_from_tensor_list
 from util.statistics import accuracy
-from util.dn_utils import prepare_for_dn, dn_post_process, DnLoss
+from util.dn_utils import prepare_for_dn, dn_post_process, DnLoss, prepare_for_dn_2
 
 
 from .backbone import build_backbone
 from .transformer import build_transformer
 from .template_encoder import build_template_encoder
-from .layer_util import MLP, inverse_sigmoid
+from .layer_util import MLP, inverse_sigmoid, roi_align_on_feature_map
 from .feature_alignment import TemplateFeatAligner
 from loses.sigmoid_focal_loss import sigmoid_focal_loss, focal_loss, FocalLoss
 
@@ -37,7 +37,8 @@ class DETR(nn.Module):
                  num_queries,
                  aux_loss,
                  two_stage = False,
-                 dn_args: dict = None):
+                 dn_args: dict = None,
+                 train_method = "both"):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -51,9 +52,11 @@ class DETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         self.hidden_dim = transformer.d_model
+        self.class_embed_pre = nn.Linear(self.hidden_dim, 1)
         self.class_embed = nn.Linear(self.hidden_dim, 2)
         self.sim_embed = nn.Linear(self.hidden_dim, 1)
         
+        self.train_method = train_method
         self.two_stage = two_stage
         self.refpoint_embed = nn.Embedding(num_queries, 4)
         if self.two_stage:
@@ -113,65 +116,45 @@ class DETR(nn.Module):
         # Check that input is a NestedTensor, if not, convert it
         out = {}
         assert isinstance(samples, NestedTensor), "Input should be a Nested Tensor"
-        bs = samples.tensors.shape[0]        
+        bs = samples.tensors.shape[0]
+        
+        #####################
+        # Template Encoding #
+        #####################
+        obj_encs = self.template_encoder(samples_targets) # [BS*num_tgts, C]
+        obj_encs = obj_encs.decompose()[0] # [BS*num_tgts, C]
+        obj_encs = self.template_proj(obj_encs)# [BS*num_tgts, C]
+        
+        obj_enc = obj_encs.view(bs, -1, self.hidden_dim) # [BS, num_tgts, C]
+        obj_enc = F.max_pool1d(obj_enc.permute(0, 2, 1), obj_enc.shape[1]).squeeze(-1) # [BS, C]
+        
+
+        obj_enc_tgt = obj_enc.unsqueeze(0) # [1, BS, C]  
         
         ############
         # Backbone #
         ############
-        features, pos = self.backbone(samples)
+        features, pos = self.backbone(samples, obj_enc)
         pos = pos[-1]
 
         src, mask = features[-1].decompose()
         src = self.input_proj(src)
         assert mask is not None
-        bs, _, h, w = src.shape
+        src_sizes = torch.stack([torch.sum(~mask[:, :, 0], dim=1), torch.sum(~mask[:, 0], dim=1)], dim=1) # h, w
         
-        #####################
-        # Template Encoding #
-        #####################
-        #samples_targets, _ = samples_targets.decompose()
-        #obj_enc: NestedTensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
-        # obj_enc, _ = self.backbone(samples_targets)
-        # obj_enc, obj_mask = obj_enc[-1].decompose()
-        # obj_enc = self.input_proj(obj_enc)
-        # image_sizes = torch.stack([torch.sum(~obj_mask[:, :, 0], dim=1), torch.sum(~obj_mask[:, 0], dim=1)], dim=1) # N, 2
-        # bbox = torch.zeros((obj_enc.shape[0], 5), device = obj_enc.device)
-        # bbox[:, 3] = image_sizes[:, 0]
-        # bbox[:, 4] = image_sizes[:, 1]
-        # bbox[:, 0] = torch.arange(obj_enc.shape[0], device = obj_enc.device)
-        # obj_enc = roi_align(obj_enc, bbox, (4, 4)) # N, C, 1, 1
-        # obj_enc = F.max_pool2d(obj_enc, (4, 4))
-        # #obj_enc = nn.MaxPool2d(kernel_size = (obj_enc.shape[2], obj_enc.shape[3]))(obj_enc) # [bs, 256, 1, 1]
-        # obj_enc = obj_enc.view(obj_enc.shape[0], obj_enc.shape[1]) # [bs, 256]
-        # #obj_enc = self.template_proj(obj_enc) # [bs, 256]
+        _, _, img_h, img_w = src.shape
         
-        
-        obj_enc = self.template_encoder(samples_targets) # [BS*num_tgts, C]
-        obj_enc = obj_enc.decompose()[0] # [BS*num_tgts, C]
-        obj_enc = self.template_proj(obj_enc)# [BS*num_tgts, C]
-        
-        
+
         out_feat = self.contrastive_projection(src.permute(0, 2, 3, 1))
-        #out_feat = out_feat / out_feat.norm(dim=-1, keepdim=True)
-        out_obj_enc = self.contrastive_projection(obj_enc)
+        out_obj_enc = self.contrastive_projection(obj_encs)
         out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
         out["features"] = out_feat.permute(0, 3, 1, 2)
         out["mask"] = mask
         out["obj_encs"] = out_obj_enc
         
-        #return out
-        
-        
-        obj_enc_tgt = obj_enc.view(bs, -1, self.hidden_dim) # [BS, num_tgts, C]
-        obj_enc_tgt = F.max_pool1d(obj_enc_tgt.permute(0, 2, 1), obj_enc_tgt.shape[1]).squeeze(-1) # [BS, C]
-        obj_enc_tgt = obj_enc_tgt.unsqueeze(0) # [1, BS, C]
-        
-        # ref_placeholder = torch.zeros((bs, self.hidden_dim), device=obj_enc.device, dtype=obj_enc.dtype) # [BS, C]
-        # ref_placeholder = ref_placeholder.unsqueeze(1).repeat(1, self.num_queries, 1) # [BS, NQ, C]
-        # ref_placeholder = ref_placeholder.permute(1, 0, 2) # [NQ, BS, C]
-        
+        if self.train_method == "contrastive_only":
+            return out
 
-        
         ###############
         # Transformer #
         ###############
@@ -180,7 +163,7 @@ class DETR(nn.Module):
             
         # prepare for DN
         input_query_label, input_query_bbox, attn_mask, mask_dict = \
-            prepare_for_dn(targets,
+            prepare_for_dn_2(targets,
                            self.dn_args,
                            ref_points_unsigmoid,
                            obj_enc_tgt.repeat(self.num_queries, 1, 1).detach(),
@@ -190,7 +173,7 @@ class DETR(nn.Module):
                            self.label_enc,
             )
             
-        hs, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = src,
+        ca, sa, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = src,
                                                     src_pos_embed = pos,
                                                     src_mask = mask,
                                                     tgt_point_embed = input_query_bbox,
@@ -202,9 +185,12 @@ class DETR(nn.Module):
         ###########
         # Outputs #
         ###########
-        obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(hs.shape[0], 1, hs.shape[2], 1) # [BS, NQ, 1, C]
-        outputs_class = self.class_embed(hs-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
-        output_sim = self.sim_embed(hs-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
+        rois = roi_align_on_feature_map(src, reference_pts_layers[1:], src_sizes) # [num_layers, bs, num_queries, hidden_dim]
+        obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(ca.shape[0], 1, ca.shape[2], 1) # [BS, NQ, 1, C]
+        
+        outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
+        outputs_class = self.class_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
+        output_sim = self.sim_embed(rois-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
         
         # DB post processing
@@ -243,7 +229,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, dn_args, focal_alpha, batch_size, losses):
+    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, dn_args, focal_alpha, batch_size, losses, train_method):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -262,6 +248,7 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.stats = {}
         self.bs = batch_size
+        self.train_method = train_method
         
         self.contrast_temp = 0.1
         
@@ -499,10 +486,9 @@ class SetCriterion(nn.Module):
         if torch.isnan(contrast_out) or torch.isinf(contrast_out):
             print("Warning: Contrast loss is nan or inf")
             contrast_out = torch.tensor(0.0, device=device)
-        print(contrast_out)
         
         loss = {"loss_contrastive": contrast_out}
-        stats = {}
+        stats = {"loss_contrastive": contrast_out.detach()}
         
         return loss, stats
 
@@ -527,6 +513,11 @@ class SetCriterion(nn.Module):
         
         losses.update(loss)
         stats.update(stats)
+        
+        if self.train_method == "contrastive_only":
+            losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.weight_dict})
+            losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.dn_weight_dict})
+            return losses, stats
         
         
         
@@ -641,6 +632,7 @@ def build_model(args, device):
         aux_loss=args.AUX_LOSS,
         dn_args=args.DN_ARGS,
         two_stage=args.TWO_STAGE,
+        train_method = args.TRAIN_METHOD,
     )
 
     # Regular Loss Weights
@@ -678,7 +670,8 @@ def build_model(args, device):
                              dn_args = args.DN_ARGS,
                              focal_alpha=args.FOCAL_ALPHA,
                              batch_size = args.BATCH_SIZE,
-                             losses=losses)
+                             losses=losses,
+                             train_method=args.TRAIN_METHOD)
     criterion.to(device)
     
     # Create the postprocessor

@@ -6,25 +6,36 @@ import math
 
 import torch.nn as nn
 
-from util.misc import NestedTensor
+from util.misc import NestedTensor, nested_tensor_from_tensor_list
 from data_generator.coco import get_coco_data_generator#, build_dataset
 from data_generator.AVD import build_AVD_dataset, get_avd_data_generator
 from data_generator.GMU_kitchens import build_GMU_dataset, get_gmu_data_generator
 from data_generator.Objects365 import build_365_dataset, get_365_data_generator
 from data_generator.mixed_generator import get_concat_dataset
+from data_generator.mix_data_generator import build_MIX_dataset, get_mix_data_generator
 from data_generator.transforms import DeNormalize
 from util.data_utils import display_data
 from configs.vision_focusnet_config import Config
 
 from models.position_encoding import build_position_encoding
-from models.backbone import build_backbone
-from models.template_encoder import build_resnet_template_encoder
+from models.backbone import build_backbone, ResNet50_custom
 
 
 if __name__ == "__main__":
-    cfg = Config()
-    denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    # fix the seed for reproducibility
+    seed = 42
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
     
+    cfg = Config()
+    # denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    
+    # inp = nested_tensor_from_tensor_list([torch.rand(3, 224, 224), torch.rand(3, 165, 224)])
+    # backbone = ResNet50_custom()
+
+    # n_parameters = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+    # backbone(inp, torch.rand(1, 256))
     # a = [5, 10, 79, 28, 94, 96, 18, 21, 50, 12, 14]
     # test = [8, 29, 16, 11, 15, 9, 3, 7, 24, 26, 2, 32, 19, 20, 25, 1, 23, 4, 13, 17, 6, 31, 27, 22, 30]
     # train = [18, 21, 28, 5, 14, 12, 10]
@@ -59,24 +70,32 @@ if __name__ == "__main__":
     # plt.savefig("asd.png")
  
     # Test data loader
-    if True:
+    if False:
         
         #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
-        train_data_loader, test_data_loader = get_365_data_generator(cfg)
+        train_data_loader, test_data_loader = get_mix_data_generator(cfg)
         i = 0
         
+        data = next(iter(train_data_loader))
+        data = next(iter(train_data_loader))
         data = next(iter(train_data_loader))
         display_data(data)
 
         
-    if False:
+    if True:
         
-        train_data_loader, test_data_loader = get_concat_dataset(cfg)
+        train_data_loader, test_data_loader = get_mix_data_generator(cfg)
         i = 0
         for i, data in enumerate(train_data_loader):
             if i%100 == 0:
                 print(f"{i}/{len(train_data_loader)}")
-            _, _, targets = data
+            if i > 498:
+                print("START")
+                print(data.samples.shape)
+                print(data.tgt_imgs.shape)
+                display_data(data)
+                print("END")
+            #_, _, targets = data
             
         display_data(data)
         

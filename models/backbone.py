@@ -6,6 +6,7 @@ Backbone modules.
 import torch
 import torch.nn.functional as F
 import torchvision
+import copy
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
 from torchvision.models.feature_extraction import create_feature_extractor
@@ -14,6 +15,7 @@ from typing import Dict, List
 from util.misc import NestedTensor
 
 from .position_encoding import build_position_encoding
+from .layer_util import AdjustableConvolution2d
 
 
 class FrozenBatchNorm2d(torch.nn.Module):
@@ -66,7 +68,7 @@ class BackboneBase(nn.Module):
         self.body = create_feature_extractor(backbone, layer_names)
         self.num_channels = num_channels
 
-    def forward(self, tensor_list: NestedTensor):
+    def forward(self, tensor_list: NestedTensor, tgts: torch.Tensor = None):
         xs = self.body(tensor_list.tensors)
         out: Dict[str, NestedTensor] = {}
         for name, x in xs.items():
@@ -101,7 +103,13 @@ class Backbone(BackboneBase):
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=pretrained, norm_layer=FrozenBatchNorm2d)
         
-        channel_dict = {"resnet18": 512, "resnet34": 512, "resnet50": 2048, "resnet101": 2048, "efficientnet_b0": 320, "efficientnet_b1": 320, "efficientnet_b2": 352}
+        channel_dict = {"resnet18": 512,
+                        "resnet34": 512,
+                        "resnet50": 2048,
+                        "resnet101": 2048,
+                        "efficientnet_b0": 320,
+                        "efficientnet_b1": 320,
+                        "efficientnet_b2": 352}
         
         num_channels = channel_dict[name] if name in channel_dict else 256
         
@@ -112,7 +120,7 @@ class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
         super().__init__(backbone, position_embedding)
 
-    def forward(self, tensor_list: NestedTensor):
+    def forward(self, tensor_list: NestedTensor, tgts: torch.Tensor = None):
         """
         Calculates the output of the backbone and the position encodings. 
 
@@ -129,7 +137,7 @@ class Joiner(nn.Sequential):
         pos : list[NestedTensor]
             position encodings of the backbone layers 
         """
-        xs = self[0](tensor_list)
+        xs = self[0](tensor_list, tgts)
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():
@@ -139,6 +147,84 @@ class Joiner(nn.Sequential):
 
         return out, pos
 
+
+class ResNet50_custom(nn.Module):
+    def __init__(self, train_backbone=True) -> None:
+        super().__init__()
+        layers = {"layer1": "0"}
+        
+        resnet50 = torchvision.models.resnet50(pretrained=True, norm_layer=FrozenBatchNorm2d)
+        modules = list(resnet50.children())[:-2]
+        self.num_channels = 2048
+        self.in_prep = copy.deepcopy(torch.nn.Sequential(*modules[:-4]))
+        self.layer_1 = copy.deepcopy(torch.nn.Sequential(*modules[-4]))
+        self.layer_2 = copy.deepcopy(torch.nn.Sequential(*modules[-3]))
+        self.layer_3 = copy.deepcopy(torch.nn.Sequential(*modules[-2]))
+        self.layer_4 = copy.deepcopy(torch.nn.Sequential(*modules[-1]))
+        
+        del resnet50, modules
+        
+        for name, parameter in self.in_prep.named_parameters():
+            parameter.requires_grad_(train_backbone)
+        for name, parameter in self.layer_1.named_parameters():
+            parameter.requires_grad_(train_backbone)
+        for name, parameter in self.layer_2.named_parameters():
+            parameter.requires_grad_(train_backbone)
+        for name, parameter in self.layer_3.named_parameters():
+            parameter.requires_grad_(train_backbone)
+        for name, parameter in self.layer_4.named_parameters():
+            parameter.requires_grad_(train_backbone)
+                     
+        self.adjust_conv_1 = AdjustableConvolution2d(input_dim = 256, output_dim = 256, template_input_dim=256, kernel_size=3, stride=(1, 1), padding=(1, 1))
+        self.adjust_conv_2 = AdjustableConvolution2d(input_dim = 512, output_dim = 512, template_input_dim=256, kernel_size=3, stride=(1, 1), padding=(1, 1))  
+        self.adjust_conv_3 = AdjustableConvolution2d(input_dim = 1024, output_dim = 1024, template_input_dim=256, kernel_size=3, stride=(1, 1), padding=(1, 1))  
+        self.adjust_conv_4 = AdjustableConvolution2d(input_dim = 2048, output_dim = 2048, template_input_dim=256, kernel_size=3, stride=(1, 1), padding=(1, 1))           
+        
+        
+    def forward(self, tensor_list: NestedTensor, tgts: torch.Tensor = None):
+        res_net_layers = [self.layer_1, self.layer_2, self.layer_3, self.layer_4]
+        adjustable_conv_layers = [self.adjust_conv_1, self.adjust_conv_2, self.adjust_conv_3, self.adjust_conv_4]
+        
+        x, masks = tensor_list.decompose()
+        assert masks is not None
+        
+        x = self.in_prep(x)
+        out = {}
+        
+        for i, layer in enumerate(res_net_layers):
+            x = layer(x)
+            x = adjustable_conv_layers[i](x, tgts)
+            
+            mask = F.interpolate(masks[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
+            out.update({i: NestedTensor(x, mask)})
+            
+        return out
+   
+   
+# def build_backbone(args):
+#     """
+#     Build the resnet backbone.
+
+#     Parameters
+#     ----------
+#     args : Config()
+#         - LR_BACKBONE : float
+#         - RETURN_INTERM_LAYERS : bool
+#         - BACKBONE : str in ["resnet18", "resnet34", "resnet50", "resnet101"]
+#         - DILATION : bool
+
+#     Returns
+#     -------
+#     model : nn.Module
+#         resnet backbone with frozen BatchNorm.
+#     """
+#     position_embedding = build_position_encoding(args)
+#     train_backbone = args.LR_BACKBONE > 0
+#     return_interm_layers = args.RETURN_INTERM_LAYERS
+#     backbone = ResNet50_custom()
+#     model = Joiner(backbone, position_embedding)
+#     model.num_channels = backbone.num_channels
+#     return model         
 
 def build_backbone(args):
     """

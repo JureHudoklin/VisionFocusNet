@@ -194,7 +194,7 @@ class Target():
 
     def __init__(self, **kwargs):
         self.img_prop = ["size", "orig_size", "image_id", "scene", "valid_targets"]
-        self.tgt_prop = ["boxes", "labels", "classes",
+        self.tgt_prop = ["boxes", "labels", "classes", "macro_classes",
                          "sim_labels", "iscrowd", "area"]
 
         self.keys = self.img_prop + self.tgt_prop
@@ -294,6 +294,7 @@ class Target():
         self.target["image_id"] = self.target["image_id"].long()
         self.target["boxes"] = self.target["boxes"].reshape(-1, 4).float()
         self.target["valid_targets"] = self.target["valid_targets"].bool()
+        self.target["macro_classes"] = self.target["macro_classes"].long()
 
     @property
     def is_valid(self):

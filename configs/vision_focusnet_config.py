@@ -15,7 +15,7 @@ class Config():
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
     
-    BATCH_SIZE = 24
+    BATCH_SIZE = 14
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -71,7 +71,7 @@ class Config():
         "USE_DN" : True,
         "USE_DN_AUX" : True,
         "LABEL_NOISE_SCALE": 0.2,
-        "BOX_NOISE_SCALE": 0.2,
+        "BOX_NOISE_SCALE": 0.3,
         "NUM_DN_GROUPS": 5,
         "USE_INDICATOR": False,
     }
@@ -97,6 +97,7 @@ class Config():
     TGT_MIN_AREA = 500
     PIN_MEMORY = True
     #COCO_PATH = "/hdd/datasets/COCO/images"
+    MIX_PATH = "/home/jure/datasets/mix_dataset"
     COCO_PATH = "/home/jure/datasets/COCO/images"
     AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
     GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"
