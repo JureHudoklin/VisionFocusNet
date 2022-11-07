@@ -11,7 +11,7 @@ import random
 import glob
 import PIL
 import copy
-import yaml
+import json
 import numpy as np
 
 from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target, CustomBatch, collate_wrapper, set_worker_sharing_strategy
@@ -49,67 +49,66 @@ class MIXLoader():
         self.to_tensor = torchvision.transforms.ToTensor()
         self.to_PIL = torchvision.transforms.ToPILImage()
         
-        self.dataset = self._load_dataset()
+        self.dataset, self.annotations, self.target_annotations = self._load_dataset()
+        self.mc_to_int = self._macroclass_to_int()
         
         self.fail_save = self.__getitem__(0)
  
     def _load_dataset(self):
         # Load Dataset
-        ann_dir = os.path.join(self.root_dir, "annotations")
-        files = os.scandir(ann_dir)
-        dataset = [file.name for file in files if file.is_file()]
+        dataset_info = json.load(open(os.path.join(self.root_dir, "dataset_info.json"), "r"))
+        annotations = dataset_info["annotations"]
+        target_annotations = dataset_info["targets_info"]
+        
 
         # Sort dataset
-        image_ids = [file.split(".")[0] for file in dataset]
-        dataset = [x for _, x in sorted(zip(image_ids, dataset))]
-        dataset = dataset[0:20000]
-        if self.scenes is not None or self.datasets is not None or self.max_images_per_dataset is not None:
-            # Load Annotations
-            ann = [self._load_annotation(file) for file in dataset]
-            # Remove entry's from wrong datasets
-            if self.scenes is not None:
-                dataset = [d for d, a in zip(dataset, ann) if a["scene"] in self.scenes]
-                ann = [a for a in ann if a["scene"] in self.scenes]
-            if self.datasets is not None:
-                dataset = [d for d, a in zip(dataset, ann) if a["dataset"] in self.datasets]
-                ann = [a for a in ann if a["dataset"] in self.datasets]
-            # Remove datasets with too many images
-            dataset_idx = {}
-            for i in range(len(ann)):
-                ds = ann[i]["dataset"]
-                if ds not in dataset_idx:
-                    dataset_idx[ds] = []
-                dataset_idx[ds].append(i)
-            for k, v in dataset_idx.items():
-                if len(v) > self.max_images_per_dataset:
-                    dataset_idx[k] = random.sample(v, self.max_images_per_dataset)
-            dataset_new = []
-            for ds in dataset_idx.values():
-                dataset_new.extend([dataset[i] for i in ds])
-            dataset = dataset_new
+        ann_total = {}
+        for img_id, ann in annotations.items():
+            if self.scenes is not None and ann["scene"] not in self.scenes:
+                continue
+            if self.datasets is not None and ann["dataset"] not in self.datasets:
+                continue
+            if ann["dataset"] not in ann_total:
+                ann_total[ann["dataset"]] = []
+            ann_total[ann["dataset"]].append(img_id)
             
+        # Filter dataset
+        if self.max_images_per_dataset is not None:
+            for dataset, img_ids in ann_total.items():
+                if len(img_ids) > self.max_images_per_dataset:
+                    ann_total[dataset] = random.sample(img_ids, self.max_images_per_dataset)
             
-        dataset = np.array(dataset).astype(np.string_)
-        return dataset
+        dataset = []
+        for ds, img_ids in ann_total.items():
+            dataset.extend(img_ids)
+            
+        dataset = np.array(sorted(dataset), dtype=np.int)
+            
+        return dataset, annotations, target_annotations
     
-    def _load_annotation(self, file):
-        with open(os.path.join(self.root_dir, "annotations", file), "r") as f:
-            data = yaml.load(f, Loader=yaml.FullLoader)
-        return data
-    
-    def _format_annotation(self, data):
-        target = Target()
-        scene = data["scene"]
-        dataset = data["dataset"]
-        #w, h = data["width"], data["height"]
-        classes = data["similarity_id"]
-        macro_classes = data["classes"]
-        boxes = data["boxes"]
+    def _macroclass_to_int(self, offset = 0):
+        macroclasses = [it["macroclass"] for moid, it in self.target_annotations.items()]
+        macroclasses = sorted(list(set(macroclasses)))
+        mc_to_int = {mc: i+offset for i, mc in enumerate(macroclasses)}
         
-        target["image_id"] = data["image_id"]
+        return mc_to_int
+    
+    def _load_annotation(self, img_id):
+        target = Target()
+        img_ann = self.annotations[str(img_id)]
+        
+        scene = img_ann["scene"]
+        dataset = img_ann["dataset"]
+        w, h = img_ann["width"], img_ann["height"]
+        classes = img_ann["classes"]
+        boxes = img_ann["boxes"]
+        
+        target["image_id"] = img_id
         target["boxes"] = boxes
         target["classes"] = classes
-        target["macro_classes"] = macro_classes
+        target["orig_size"] = torch.tensor([h, w])
+        target["size"] = torch.tensor([h, w])
+        target["valid_targets"] = torch.zeros(self.num_tgts, dtype=torch.bool)
         target.calc_area()
         target.calc_iscrowd()
         
@@ -119,65 +118,60 @@ class MIXLoader():
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        try:
-            data = self.dataset[idx]
-            data = data.decode("utf-8")
-            target = self._format_annotation(self._load_annotation(data))
-            image_id = target["image_id"]
-            img_path = os.path.join(self.root_dir, "images", f"{image_id:07d}.png")
-            with PIL.Image.open(img_path) as img:
-                img.load()
-            
-            ### Format base labels ###
-            img, base_target = self.format_base_lbls(img, target)
-            base_target.make_valid()
-            
-            if self._base_transforms is not None:
-                img, base_target = self._base_transforms(img, base_target)
-                
-            ### Load tgt labels ###
-            img, tgt_imgs, tgt_target = self.format_target_lbls(img, base_target)
-            tgt_target.make_valid()
-            if len(tgt_imgs) < self.num_tgts:
-                place_holder_img = self.to_PIL(torch.zeros(3, 64, 64))
-                tgt_imgs = tgt_imgs + [place_holder_img]*(self.num_tgts - len(tgt_imgs))
-            
-            # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
-            if self._tgt_transforms is not None:
-                tgt_imgs_new = []
-                for tgt_img in tgt_imgs:
-                    tgt_img, _ = self._tgt_transforms(tgt_img, None)
-                    tgt_img, _ = self._inp_transforms(tgt_img, None)
-                    
-                    tgt_imgs_new.append(tgt_img)
-                tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
-                tgt_target.normalize()
-            
-            img, base_target = self._inp_transforms(img, base_target)
-            
-            ### Return the dictionary form of the target ###
-            tgt_target = tgt_target.as_dict
-            base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
-            target = {**base_target, **tgt_target}
-            
-            return img, tgt_imgs, target
-        except:
-            return self.fail_save
-    
-    def format_base_lbls(self, img, target):
-        target = copy.deepcopy(target)
-        target["valid_targets"] = torch.zeros(self.num_tgts, dtype=torch.bool)
-        target["size"] = torch.tensor([img.size[1], img.size[0]])
-        target["orig_size"] = torch.tensor([img.size[1], img.size[0]])
+        img_id = self.dataset[idx]
+        base_target = self._load_annotation(img_id)
+        image_id = base_target["image_id"]
+        img_path = os.path.join(self.root_dir, "images", f"{image_id:07d}.png")
+        with PIL.Image.open(img_path) as img:
+            img.load()
         
-        return img, target
+        ### Format base labels ###
+        base_target.make_valid()
+        
+        if self._base_transforms is not None:
+            img, base_target = self._base_transforms(img, base_target)
+            
+        ### Load tgt labels ###
+        img, tgt_imgs, tgt_target = self.format_target_lbls(img, base_target)
+        tgt_target.make_valid()
+        if len(tgt_imgs) < self.num_tgts:
+            place_holder_img = self.to_PIL(torch.zeros(3, 64, 64))
+            tgt_imgs = tgt_imgs + [place_holder_img]*(self.num_tgts - len(tgt_imgs))
+        
+        # --- Apply tgt transformations and normalize (tgt img and tgt labels) --- 
+        if self._tgt_transforms is not None:
+            tgt_imgs_new = []
+            for tgt_img in tgt_imgs:
+                tgt_img, _ = self._tgt_transforms(tgt_img, None)
+                tgt_img, _ = self._inp_transforms(tgt_img, None)
+                
+                tgt_imgs_new.append(tgt_img)
+            tgt_imgs = tgt_imgs_new # (num_tgts, 3, h, w)
+            tgt_target.normalize()
+        
+        img, base_target = self._inp_transforms(img, base_target)
+        
+        ### Return the dictionary form of the target ###
+        tgt_target = tgt_target.as_dict
+        base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
+        target = {**base_target, **tgt_target}
+        
+        return img, tgt_imgs, target
+        
     
     def format_target_lbls(self, img, target):
         tgt_target = copy.deepcopy(target)
         classes = tgt_target["classes"]
-        macro_classes = tgt_target["macro_classes"]
-        random_idx = random.sample(range(len(classes)), 1)
         
+        macro_classes = [self.target_annotations[str(c.item())]["macroclass"] for c in classes]
+        macro_classes = [self.mc_to_int[mc] for mc in macro_classes]
+        macro_classes = torch.tensor(macro_classes, dtype=torch.long)
+      
+        if len(classes) > 0:
+            random_idx = random.sample(range(len(classes)), 1)[0]
+        else:
+            return img, None, tgt_target
+
         selected_class = classes[random_idx]
         selected_macro_class = macro_classes[random_idx]
         same_macro_class = torch.where(macro_classes == selected_macro_class)[0]
@@ -195,22 +189,30 @@ class MIXLoader():
     def _get_tgt_img(self, obj_id):
         obj_id = obj_id.item()
         target_img_path = os.path.join(self.root_dir, "templates")
-        
-        def get_file_path(files):
-            if len(files) > 0:
-                return random.choice(files)
-            else:
-                return None
             
         tgt_imgs = []
+        paths_all = []
         for target_view in ["view_0", "view_1", "view_2"]:
             pth = os.path.join(target_img_path, target_view, "images")
+            
             files_target = glob.glob(os.path.join(pth, f"{obj_id:04d}" + "*"))
-            file_path = get_file_path(files_target)
-            if file_path is not None:
-                with PIL.Image.open(file_path) as tgt_img:
-                    tgt_img.load()
-                tgt_imgs.append(tgt_img)
+            if len(files_target) == 0:
+                continue
+            
+            paths_all.extend(files_target)
+            file_path = random.choice(files_target)
+            paths_all.remove(file_path)
+            
+            with PIL.Image.open(file_path) as tgt_img:
+                tgt_img.load()
+            tgt_imgs.append(tgt_img)
+            
+        if len(tgt_imgs) < self.num_tgts and len(paths_all) > 0:
+            file_path = random.choice(paths_all)
+            with PIL.Image.open(file_path) as tgt_img:
+                tgt_img.load()
+            tgt_imgs.append(tgt_img)
+            
         return tgt_imgs
  
     

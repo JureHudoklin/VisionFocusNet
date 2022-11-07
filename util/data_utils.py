@@ -136,7 +136,7 @@ def display_data(data):
             ax.imshow(img.permute(1, 2, 0))
 
     fig.tight_layout()
-    plt.savefig('dataset_visualize.png', dpi=500)
+    plt.savefig('dataset_visualize.png', dpi=800)
 
 
 def collate_fn(batch):

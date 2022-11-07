@@ -33,9 +33,10 @@ class DETR(nn.Module):
     def __init__(self, backbone,
                  transformer,
                  template_encoder,
-                 num_classes,
                  num_queries,
+                 d_model,
                  aux_loss,
+                 num_levels,
                  two_stage = False,
                  dn_args: dict = None,
                  train_method = "both"):
@@ -49,42 +50,49 @@ class DETR(nn.Module):
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
         """
         super().__init__()
+        ### Parameters ###
         self.num_queries = num_queries
-        self.transformer = transformer
-        self.hidden_dim = transformer.d_model
-        self.class_embed_pre = nn.Linear(self.hidden_dim, 1)
-        self.class_embed = nn.Linear(self.hidden_dim, 2)
-        self.sim_embed = nn.Linear(self.hidden_dim, 1)
-        
-        self.train_method = train_method
+        self.d_model = d_model
+        self.num_levels = num_levels
+        self.aux_loss = aux_loss
         self.two_stage = two_stage
+        self.train_method = train_method
+        
+        self.dn_args = dn_args            
+
+
+        ### Networks ###
+        self.transformer = transformer
+        self.backbone = backbone
+        self.template_encoder = template_encoder
+        
+        # --- backbone input projections ---
+        bb_num_channels = backbone.num_channels
+        bb_num_channels = [bb_num_channels[i]//2**(len(bb_num_channels)-i-1) for i in range(len(bb_num_channels))]
+        self.input_proj = nn.ModuleList()
+        for i in range(num_levels):
+            self.input_proj.append(nn.Conv2d(bb_num_channels[i], d_model, kernel_size=1))
+
+        ### Various embedding networks ###
+        self.class_embed_pre = nn.Linear(self.d_model, 1)
+        self.class_embed = nn.Linear(self.d_model, 2)
+        self.sim_embed = nn.Linear(self.d_model, 1)
         self.refpoint_embed = nn.Embedding(num_queries, 4)
         if self.two_stage:
             self.refpoint_embed.requires_grad = False
                
-        self.label_enc = nn.Embedding(3, self.hidden_dim)
-        self.num_classes = num_classes
-        self.input_proj = nn.Conv2d(backbone.num_channels, self.hidden_dim, kernel_size=1)
-        self.backbone = backbone
-        self.aux_loss = aux_loss 
+        self.label_enc = nn.Embedding(3, self.d_model)
+        self.template_proj= MLP(self.template_encoder.out_channels, self.d_model*2, self.d_model, 3)
+        self.contrastive_projection = nn.Linear(self.d_model, self.d_model*4)
         
-        self.template_encoder = template_encoder        
-        self.template_proj= MLP(self.template_encoder.out_channels, self.hidden_dim*2, self.hidden_dim, 3)
-        
-        self.contrastive_projection = nn.Linear(self.hidden_dim, self.hidden_dim*4)
-        
-        
+        ### Initialize Weights ###
         # init prior_prob setting for focal loss
-        #prior_prob = 0.01
         prior_prob = 0.2
         bias_value = math.log((1 - prior_prob) / prior_prob)
-        #self.class_embed.bias.data.shape # (2,)
-        # Number of [0, 1] lables is very small
         
         self.class_embed.bias.data = torch.tensor([0.01, 0.99])
         self.sim_embed.bias.data = torch.tensor([bias_value])
         
-        self.dn_args = dn_args            
      
 
     def forward(self, samples: NestedTensor, samples_targets: NestedTensor, targets = None):
@@ -124,10 +132,10 @@ class DETR(nn.Module):
         obj_encs = self.template_encoder(samples_targets) # [BS*num_tgts, C]
         obj_encs = obj_encs.decompose()[0] # [BS*num_tgts, C]
         obj_encs = self.template_proj(obj_encs)# [BS*num_tgts, C]
+        num_tgts = obj_encs.shape[0] // bs
         
-        obj_enc = obj_encs.view(bs, -1, self.hidden_dim) # [BS, num_tgts, C]
+        obj_enc = obj_encs.view(bs, -1, self.d_model) # [BS, num_tgts, C]
         obj_enc = F.max_pool1d(obj_enc.permute(0, 2, 1), obj_enc.shape[1]).squeeze(-1) # [BS, C]
-        
 
         obj_enc_tgt = obj_enc.unsqueeze(0) # [1, BS, C]  
         
@@ -135,16 +143,47 @@ class DETR(nn.Module):
         # Backbone #
         ############
         features, pos = self.backbone(samples, obj_enc)
-        pos = pos[-1]
-
-        src, mask = features[-1].decompose()
-        src = self.input_proj(src)
-        assert mask is not None
-        src_sizes = torch.stack([torch.sum(~mask[:, :, 0], dim=1), torch.sum(~mask[:, 0], dim=1)], dim=1) # h, w
+        pos = pos[-self.num_levels:] # list([B, C, H, W])
+        features = features[-self.num_levels:]
+        mask_flat = []
+        feat_flat = []
+        pos_flat = []
+        feat_sizes = []
+        mask_sizes = []
+        level_start_index = []
+        for i in range(self.num_levels):
+            # --- Get Lin Proj ---
+            input_proj = self.input_proj[i]
+            
+            # Get features and masks
+            mask, feat = features[i].decompose()
+            assert mask is not None
+            feat = input_proj(feat)
+            features[i] = NestedTensor(feat, mask)
+            
+            # --- Get Position ---
+            pos_flat.append(pos[i].flatten(2))
+            
+            # --- Get sizes ---
+            feat_sizes.append(feat.shape[-2:])
+            mask_size = torch.stack([torch.sum(~mask[:, :, 0], torch.sum(~mask[:, 0], dim=1),  dim=1)], dim=1) # B, 2 
+            mask_sizes.append(mask_size)
+            
+            # --- Format and save ---
+            feat_f = feat.flatten(2).contiguous()  # [B, C, H*W]
+            mask_f = mask.flatten(1).contiguous()   # [B, H*W]
+            feat_flat.append(input_proj(feat))
+            mask_flat.append(mask)
+            level_start_index.append(feat_f.shape[-1])
+            
+        mask_flat = torch.cat(mask_flat, dim=1) # [B, sum(H*W)]  
+        feat_flat = torch.cat(feat_flat, dim=-1) # [B, C, sum(H*W)]
+        pos_flat = torch.cat(pos_flat, dim=-1) # [B, C, sum(H*W)]
+        level_start_index = torch.tensor(level_start_index).cumsum(0) # [num_levels]    
         
-        _, _, img_h, img_w = src.shape
-        
-
+        ################################
+        # Prepare for contrastive loss #
+        ################################
         out_feat = self.contrastive_projection(src.permute(0, 2, 3, 1))
         out_obj_enc = self.contrastive_projection(obj_encs)
         out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
@@ -158,7 +197,6 @@ class DETR(nn.Module):
         ###############
         # Transformer #
         ###############
-        bs = src.shape[0]
         ref_points_unsigmoid = self.refpoint_embed.weight # [num_queries, 4]
             
         # prepare for DN
@@ -169,17 +207,20 @@ class DETR(nn.Module):
                            obj_enc_tgt.repeat(self.num_queries, 1, 1).detach(),
                            bs,
                            self.training,
-                           self.hidden_dim,
+                           self.d_model,
                            self.label_enc,
             )
             
-        ca, sa, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = src,
-                                                    src_pos_embed = pos,
-                                                    src_mask = mask,
+        ca, sa, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = feat_flat,
+                                                    src_pos_embed = pos_flat,
+                                                    src_mask = mask_flat,
                                                     tgt_point_embed = input_query_bbox,
                                                     tgt_label_embed = input_query_label,
                                                     tgt_attn_mask = attn_mask,
                                                     tgts = obj_enc,
+                                                    feat_sizes = feat_sizes,
+                                                    mask_sizes = mask_sizes,
+                                                    level_start_index = level_start_index,
                                                     ) # hs: [num_layers, bs, num_queries, hidden_dim], reference_pts_layers: [num_layers, bs, num_queries, 4]
 
         ###########

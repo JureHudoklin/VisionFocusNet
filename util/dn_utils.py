@@ -166,7 +166,7 @@ def prepare_for_dn(targets, #  List[Dict[str, Tensor]]
 
     return input_query_label, input_query_bbox, attn_mask, mask_dict
 
-def prepare_for_dn_2(targets, #  List[Dict[str, Tensor]]
+def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
                    dn_args,
                    ref_points_unsigmoid, # [Q, 4]
                    ref_tgt, # [Q, C]

@@ -29,6 +29,15 @@ if __name__ == "__main__":
     random.seed(seed)
     
     cfg = Config()
+    
+    spatial_shapes = [(15, 15), (8, 8), (4, 4), (2, 2), (1, 1)]
+    
+    spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long)
+    print(spatial_shapes.shape)
+    level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1])) # 
+    print(level_start_index)
+    exit()
+    
     # denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     
     # inp = nested_tensor_from_tensor_list([torch.rand(3, 224, 224), torch.rand(3, 165, 224)])
@@ -70,19 +79,18 @@ if __name__ == "__main__":
     # plt.savefig("asd.png")
  
     # Test data loader
-    if False:
+    if True:
         
         #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
         train_data_loader, test_data_loader = get_mix_data_generator(cfg)
         i = 0
+        print(len(train_data_loader))
         
-        data = next(iter(train_data_loader))
-        data = next(iter(train_data_loader))
         data = next(iter(train_data_loader))
         display_data(data)
 
         
-    if True:
+    if False:
         
         train_data_loader, test_data_loader = get_mix_data_generator(cfg)
         i = 0

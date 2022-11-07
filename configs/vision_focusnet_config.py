@@ -92,7 +92,7 @@ class Config():
     ###########
     # Dataset #
     ###########
-    NUM_WORKERS = 6
+    NUM_WORKERS = 0
     NUM_TGTS = 3
     TGT_MIN_AREA = 500
     PIN_MEMORY = True
