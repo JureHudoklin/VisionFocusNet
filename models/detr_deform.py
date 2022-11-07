@@ -145,6 +145,19 @@ class DETR(nn.Module):
         features, pos = self.backbone(samples, obj_enc)
         pos = pos[-self.num_levels:] # list([B, C, H, W])
         features = features[-self.num_levels:]
+        feat_list = []
+        mask_list = []
+        for i in range(self.num_levels):
+            # --- Get Lin Proj ---
+            input_proj = self.input_proj[i]
+
+            feat, mask = features[i].decompose()
+            feat = input_proj(feat)
+            features[i] = NestedTensor(feat, mask)
+            feat_list.append(feat)
+            mask_list.append(mask)
+        
+        
         mask_flat = []
         feat_flat = []
         pos_flat = []
@@ -152,8 +165,6 @@ class DETR(nn.Module):
         mask_sizes = []
         level_start_index = []
         for i in range(self.num_levels):
-            # --- Get Lin Proj ---
-            input_proj = self.input_proj[i]
             
             # Get features and masks
             mask, feat = features[i].decompose()

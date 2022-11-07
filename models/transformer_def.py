@@ -72,7 +72,8 @@ class Transformer(nn.Module):
         assert query_scale_type in ['cond_elewise', 'cond_scalar']
         
         self.level_embed = nn.Parameter(torch.Tensor(n_levels, d_model))
-        
+        self.n_levels = n_levels
+
         self.two_stage = two_stage
         if two_stage:
             self.enc_output = nn.Linear(d_model, d_model)
@@ -156,26 +157,48 @@ class Transformer(nn.Module):
         return valid_ratios
 
     def forward(self, 
-                src: Tensor, # [B, C, sum(HW)]
-                src_pos_embed: Tensor, # [B, C,sum(HW)]
-                src_mask: Tensor, # [B, C,sum(HW)]
+                src: Tensor, # [list (B, C, H, W)]
+                src_pos_embed: Tensor, # [list (B, C, H, W)]
+                src_mask: Tensor, # [list (B, H, W)]
                 tgt_point_embed: Tensor, # (Q, B, 4)
                 tgt_label_embed: Tensor, # (Q, B, C)
                 tgt_attn_mask: Tensor, # (Q, Q)
                 tgts: Tensor, # (BS*num_tgts, C)
-                feat_sizes, # list(H, W)
-                mask_sizes, # list(h, w)
-                level_start_index, # (num_levels)
-    ):
+    ):  
+        ####################
+        ### Format input ###
+        ####################
+        mask_flat = []
+        feat_flat = []
+        pos_flat = []
+        feat_sizes = []
+        mask_sizes = []
+        level_start_index = []
+        for i in range(self.n_levels):
+            # --- Feature ---
+            feat_sizes.append(src[i].shape[-2:])
+            feat_flat.append(src[i].flatten(2).permute(0, 2, 1)) # [B, HW, C]
+            level_start_index.append(feat_flat[-1].shape[0])
+
+            # --- Positional Embedding ---
+            pos_embed = src_pos_embed[i].flatten(2).permute(0, 2, 1)
+            pos_embed += self.level_embed[i].view(1, 1, -1)
+            pos_flat.append(pos_embed) # [B, HW, C]
+
+            # --- Mask ---
+            mask_size = torch.stack([torch.sum(~src_mask[i][:, :, 0], torch.sum(~src_mask[i][:, 0], dim=1),  dim=1)], dim=1) # B, 2 
+            mask_sizes.append(mask_size)
+            mask_flat.append(src_mask[i].flatten(1)) # [B, HW]
+
+        feat_flat = torch.cat(feat_flat, 1) # [B, HW, C]
+        pos_flat = torch.cat(pos_flat, 1) #  [B, HW, C]
+        mask_flat = torch.cat(mask_flat, 1) # [B, HW]
                 
-        # flatten NxCxHxW to HWxNxC
-        bs, c, _ = src.shape
         valid_ratios = self.get_valid_ratio(feat_sizes, mask_sizes) # B, L, 2
                 
         ##################
         ### Encoder ######
         ##################
-        src = src + self.level_embed
         memories = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed) # HWxNxC
         out_mem = []
         out_prop = []  
