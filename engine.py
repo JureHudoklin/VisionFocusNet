@@ -82,7 +82,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
         loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
         
-        losses = loss_matching + loss_dn + loss_dict["loss_contrastive"]
+        losses = loss_matching + loss_dn #+ loss_dict["loss_contrastive"]
         #losses = loss_dict["loss_contrastive"]
         
         loss_dict["loss"] = losses

@@ -193,13 +193,22 @@ class Transformer(nn.Module):
         feat_flat = torch.cat(feat_flat, 1) # [B, HW, C]
         pos_flat = torch.cat(pos_flat, 1) #  [B, HW, C]
         mask_flat = torch.cat(mask_flat, 1) # [B, HW]
-                
+        feat_sizes = torch.as_tensor(feat_sizes, dtype=torch.int64, device=feat_flat.device) # [L, 2]
+        level_start_index = torch.cat((feat_sizes.new_zeros((1, )), feat_sizes.prod(1).cumsum(0)[:-1])) # 
+        
         valid_ratios = self.get_valid_ratio(feat_sizes, mask_sizes) # B, L, 2
                 
         ##################
         ### Encoder ######
         ##################
-        memories = self.encoder(src, src_key_padding_mask=src_mask, pos=src_pos_embed) # HWxNxC
+
+        memories  = self.encoder(src,
+                                spatial_shapes = feat_sizes,
+                                level_start_index = level_start_index,
+                                valid_ratios = valid_ratios,
+                                pos = pos_flat,
+                                src_key_padding_mask = mask_flat)
+
         out_mem = []
         out_prop = []  
         out_obj = []     
@@ -233,10 +242,17 @@ class Transformer(nn.Module):
             out_obj = torch.stack(output_obj_filtered, dim=0) # L, topk, B, 2
             
             tgt_point_embed[-topk:, :, :] = out_prop[-1] # topk, B, 4
-            
-        memory = memories[-1]
-        ca, se, references = self.decoder(tgt_label_embed, memory, tgts, memory_key_padding_mask=src_mask,
-                          pos=src_pos_embed, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
+
+        ###############
+        ### Decoder ###
+        ###############
+        memory = memories[-1] # B, HW, C
+        memory = memory.permute(1, 0, 2) # HW, B, C
+        mem_key_padd_mask = mask_flat # B, HW
+        pos = pos_flat.permute(1, 0, 2) # HW, B, C
+
+        ca, se, references = self.decoder(tgt_label_embed, memory, tgts, memory_key_padding_mask=mem_key_padd_mask,
+                          pos=pos, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
         
         return ca, se, references, memories, out_prop, out_obj
 
@@ -348,9 +364,9 @@ class DeformableTransformerEncoder(nn.Module):
         Parameters
         ----------
         src : torch.Tensor # [bs, num_levels, n_points, d_model]
-        spatial_shapes : list[tuple] # [num_levels, (h, w)]
+        spatial_shapes : torch.Tensor # [L, (h, w)]
         level_start_index : torch.Tensor # [num_levels]
-        valid_ratios : list[float] # [num_levels, (h, w)]
+        valid_ratios : Tensor # [B, L, (h, w)]
         pos : torch.Tensor, optional # [bs, num_levels, n_points, d_model]
         src_key_padding_mask : torch.Tensor, optional # [bs, num_levels, n_points]
 
@@ -360,12 +376,15 @@ class DeformableTransformerEncoder(nn.Module):
         """
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        intermediate = []
         for _, layer in enumerate(self.layers):
             output = layer(output, reference_points, spatial_shapes,
                            level_start_index, 
                            src_key_padding_mask = src_key_padding_mask, pos = pos)
-
-        return output
+            if self.norm is not None:
+                output = self.norm(output)
+            intermediate.append(output)
+        return intermediate
 
 class TransformerDecoder(nn.Module):
 
@@ -421,22 +440,16 @@ class TransformerDecoder(nn.Module):
 
     def forward(self,
                 tgt, # [nq, bs, d_model]
-                memory, # [bs, c, h, w]
+                memory, # [nf, bs, d_model]
                 tgt_encodings: Tensor, # [bs*num_tgts, d_model]
                 tgt_mask: Optional[Tensor] = None, # [num_queries, num_queries]
                 memory_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None,
-                memory_key_padding_mask: Optional[Tensor] = None, # [bs, h*w]
-                pos: Optional[Tensor] = None,
+                memory_key_padding_mask: Optional[Tensor] = None, # [nf, bs]
+                pos: Optional[Tensor] = None, # [nf, bs, d_model]
                 reference_unsigmoid: Optional[Tensor] = None, #bs, query_dim, 4
                 ):
         
-        bs, c, h, w = memory.shape
-        image_sizes =torch.stack([torch.sum(~memory_key_padding_mask[:, :, 0], dim=1), torch.sum(~memory_key_padding_mask[:, 0], dim=1)], dim=1) # N, 2
-        
-        memory_flat = memory.flatten(2).permute(2, 0, 1) # [num_feat, bs, C]
-        pos = pos.flatten(2).permute(2, 0, 1) # HWxBxC
-        memory_key_padding_mask = memory_key_padding_mask.flatten(1) # BxHW
         
         
         out_cross_attn = tgt

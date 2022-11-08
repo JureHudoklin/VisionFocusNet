@@ -156,54 +156,21 @@ class DETR(nn.Module):
             features[i] = NestedTensor(feat, mask)
             feat_list.append(feat)
             mask_list.append(mask)
-        
-        
-        mask_flat = []
-        feat_flat = []
-        pos_flat = []
-        feat_sizes = []
-        mask_sizes = []
-        level_start_index = []
-        for i in range(self.num_levels):
-            
-            # Get features and masks
-            mask, feat = features[i].decompose()
-            assert mask is not None
-            feat = input_proj(feat)
-            features[i] = NestedTensor(feat, mask)
-            
-            # --- Get Position ---
-            pos_flat.append(pos[i].flatten(2))
-            
-            # --- Get sizes ---
-            feat_sizes.append(feat.shape[-2:])
-            mask_size = torch.stack([torch.sum(~mask[:, :, 0], torch.sum(~mask[:, 0], dim=1),  dim=1)], dim=1) # B, 2 
-            mask_sizes.append(mask_size)
-            
-            # --- Format and save ---
-            feat_f = feat.flatten(2).contiguous()  # [B, C, H*W]
-            mask_f = mask.flatten(1).contiguous()   # [B, H*W]
-            feat_flat.append(input_proj(feat))
-            mask_flat.append(mask)
-            level_start_index.append(feat_f.shape[-1])
-            
-        mask_flat = torch.cat(mask_flat, dim=1) # [B, sum(H*W)]  
-        feat_flat = torch.cat(feat_flat, dim=-1) # [B, C, sum(H*W)]
-        pos_flat = torch.cat(pos_flat, dim=-1) # [B, C, sum(H*W)]
-        level_start_index = torch.tensor(level_start_index).cumsum(0) # [num_levels]    
+ 
         
         ################################
         # Prepare for contrastive loss #
         ################################
-        out_feat = self.contrastive_projection(src.permute(0, 2, 3, 1))
-        out_obj_enc = self.contrastive_projection(obj_encs)
-        out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
-        out["features"] = out_feat.permute(0, 3, 1, 2)
-        out["mask"] = mask
-        out["obj_encs"] = out_obj_enc
-        
-        if self.train_method == "contrastive_only":
-            return out
+        if self.train_method == 'contrastive' or self.train_method == 'both':
+            out_feat = self.contrastive_projection(src.permute(0, 2, 3, 1))
+            out_obj_enc = self.contrastive_projection(obj_encs)
+            out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
+            out["features"] = out_feat.permute(0, 3, 1, 2)
+            out["mask"] = mask
+            out["obj_encs"] = out_obj_enc
+            
+            if self.train_method == "contrastive_only":
+                return out
 
         ###############
         # Transformer #
@@ -237,12 +204,12 @@ class DETR(nn.Module):
         ###########
         # Outputs #
         ###########
-        rois = roi_align_on_feature_map(src, reference_pts_layers[1:], src_sizes) # [num_layers, bs, num_queries, hidden_dim]
+        #rois = roi_align_on_feature_map(src, reference_pts_layers[1:], src_sizes) # [num_layers, bs, num_queries, hidden_dim]
         obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(ca.shape[0], 1, ca.shape[2], 1) # [BS, NQ, 1, C]
         
-        outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
+        #outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
         outputs_class = self.class_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
-        output_sim = self.sim_embed(rois-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
+        output_sim = self.sim_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
         
         # DB post processing
@@ -560,16 +527,16 @@ class SetCriterion(nn.Module):
         stats = {}
         
         ### CONTRASTIVE LOSS ###
-        
-        loss, stats = self.loss_contrastive(outputs, targets)
-        
-        losses.update(loss)
-        stats.update(stats)
-        
-        if self.train_method == "contrastive_only":
-            losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.weight_dict})
-            losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.dn_weight_dict})
-            return losses, stats
+        if self.train_method == "contrastive_only" or self.train_method == "both":
+            loss, stats = self.loss_contrastive(outputs, targets)
+            
+            losses.update(loss)
+            stats.update(stats)
+            
+            if self.train_method == "contrastive_only":
+                losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.weight_dict})
+                losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.dn_weight_dict})
+                return losses, stats
         
         
         
