@@ -11,7 +11,7 @@ class Config():
     LR = 0.0001
     LR_BACKBONE = 1e-5
     WEIGHT_DECAY = 0.0001
-    TRAIN_METHOD = "both" # "contrastive_only", "detection_only", "both"
+    TRAIN_METHOD = "detection_only" # "contrastive_only", "detection_only", "both"
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
     
@@ -43,7 +43,7 @@ class Config():
     
     DROPOUT = 0.0
     N_HEADS = 8
-    
+    NUM_LEVELS = 2
     NUM_QUERIES = 100 # Num of object queries
     TWO_STAGE = False
     D_MODEL = 256

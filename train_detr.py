@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from engine import train_one_epoch, evaluate
 from util.network_utils import load_model, save_model, write_summary
 from configs.vision_focusnet_config import Config
-from models.detr import build_model
+from models.detr_deform import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
 from data_generator.AVD import get_avd_data_generator, build_AVD_dataset
 from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_dataset

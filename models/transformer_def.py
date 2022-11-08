@@ -144,12 +144,10 @@ class Transformer(nn.Module):
         """
         valid_ratios = []
         for i in range(len(feat_sizes)):
-            assert feat_sizes[i][0] >= mask_sizes[i][0] and feat_sizes[i][1] >= mask_sizes[i][1], \
-                "Feature map size should be larger than mask size."
-            H, W = feat_sizes[i][0], feat_sizes[i][1]
+            H, W = feat_sizes[i, 0], feat_sizes[i, 1]
             
-            valid_ratio_h = mask_sizes[i] / H
-            valid_ratio_w = mask_sizes[i] / W
+            valid_ratio_h = mask_sizes[:, i, 0] / H
+            valid_ratio_w = mask_sizes[:, i, 0] / W
             valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
             valid_ratios.append(valid_ratio)
 
@@ -186,7 +184,7 @@ class Transformer(nn.Module):
             pos_flat.append(pos_embed) # [B, HW, C]
 
             # --- Mask ---
-            mask_size = torch.stack([torch.sum(~src_mask[i][:, :, 0], torch.sum(~src_mask[i][:, 0], dim=1),  dim=1)], dim=1) # B, 2 
+            mask_size = torch.stack([torch.sum(~src_mask[i][:, :, 0], dim = 1), torch.sum(~src_mask[i][:, 0], dim=1)], dim=1) # B, 2
             mask_sizes.append(mask_size)
             mask_flat.append(src_mask[i].flatten(1)) # [B, HW]
 
@@ -194,6 +192,7 @@ class Transformer(nn.Module):
         pos_flat = torch.cat(pos_flat, 1) #  [B, HW, C]
         mask_flat = torch.cat(mask_flat, 1) # [B, HW]
         feat_sizes = torch.as_tensor(feat_sizes, dtype=torch.int64, device=feat_flat.device) # [L, 2]
+        mask_sizes = torch.stack(mask_sizes, dim=1) # [B, L, 2]
         level_start_index = torch.cat((feat_sizes.new_zeros((1, )), feat_sizes.prod(1).cumsum(0)[:-1])) # 
         
         valid_ratios = self.get_valid_ratio(feat_sizes, mask_sizes) # B, L, 2
@@ -202,7 +201,7 @@ class Transformer(nn.Module):
         ### Encoder ######
         ##################
 
-        memories  = self.encoder(src,
+        memories  = self.encoder(feat_flat,
                                 spatial_shapes = feat_sizes,
                                 level_start_index = level_start_index,
                                 valid_ratios = valid_ratios,
@@ -327,25 +326,26 @@ class DeformableTransformerEncoder(nn.Module):
 
         Parameters
         ----------
-        spatial_shapes : list[tuple] # [num_levels, (h, w)]
+        spatial_shapes : Tensor # [num_levels, (h, w)]
             Size of each feature map.
-        valid_ratios : list[float] # [num_levels, (h, w)]
+        valid_ratios : Tensor # [B, num_levels, (h, w)]
             Ratio between the feature map size and masked image size.
         device : torch.device
             Compute device for Torch tensors.
 
         Returns
         -------
-        reference_points : list[torch.Tensor] # [num_levels, (n_points, 2)]
+        reference_points : Tensor # [B, L, n_points, 2)]
             Reference points for each feature map.
         """
         reference_points_list = []
-        for lvl, (H_, W_) in enumerate(spatial_shapes):
+        for lvl, spatial_shape in enumerate(spatial_shapes):
+            H_, W_ = spatial_shape[0], spatial_shape[1]
 
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
                                           torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
-            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
-            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
+            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * H_)
+            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * W_)
             ref = torch.stack((ref_x, ref_y), -1)
             reference_points_list.append(ref)
         reference_points = torch.cat(reference_points_list, 1)
@@ -419,9 +419,7 @@ class TransformerDecoder(nn.Module):
         
         self.bbox_embed =  MLP(d_model, d_model, 4, 3)
         
-        
-        self.feature_alignment = TemplateFeatAligner_v5(d_model, nhead = 8)
-        
+            
         self.bbox_embed_diff_each_layer = bbox_embed_diff_each_layer
 
         self.gen_sineembed = PositionEmbeddingSineChannel(d_model//2) # temperature=20
@@ -484,7 +482,7 @@ class TransformerDecoder(nn.Module):
                 query_sine_embed[..., :self.d_model // 2] *= (refHW_cond[..., 1] / obj_size[..., 1]).unsqueeze(-1)
 
             out_self_attn, out_cross_attn = layer(out_cross_attn,
-                           memory_flat,
+                           memory,
                            tgt_mask=tgt_mask,
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,
@@ -672,4 +670,3 @@ def build_transformer(args):
         two_stage=args.TWO_STAGE,
         look_forward_twice=args.LOOK_FORWARD_TWICE,
     )
-

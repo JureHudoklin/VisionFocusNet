@@ -18,7 +18,7 @@ from util.dn_utils import prepare_for_dn, dn_post_process, DnLoss, prepare_for_d
 
 
 from .backbone import build_backbone
-from .transformer import build_transformer
+from .transformer_def import build_transformer
 from .template_encoder import build_template_encoder
 from .layer_util import MLP, inverse_sigmoid, roi_align_on_feature_map
 from .feature_alignment import TemplateFeatAligner
@@ -68,7 +68,7 @@ class DETR(nn.Module):
         
         # --- backbone input projections ---
         bb_num_channels = backbone.num_channels
-        bb_num_channels = [bb_num_channels[i]//2**(len(bb_num_channels)-i-1) for i in range(len(bb_num_channels))]
+        bb_num_channels = [bb_num_channels//2**(num_levels-i-1) for i in range(num_levels)]
         self.input_proj = nn.ModuleList()
         for i in range(num_levels):
             self.input_proj.append(nn.Conv2d(bb_num_channels[i], d_model, kernel_size=1))
@@ -189,16 +189,13 @@ class DETR(nn.Module):
                            self.label_enc,
             )
             
-        ca, sa, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = feat_flat,
-                                                    src_pos_embed = pos_flat,
-                                                    src_mask = mask_flat,
+        ca, sa, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = feat_list,
+                                                    src_pos_embed = pos,
+                                                    src_mask = mask_list,
                                                     tgt_point_embed = input_query_bbox,
                                                     tgt_label_embed = input_query_label,
                                                     tgt_attn_mask = attn_mask,
                                                     tgts = obj_enc,
-                                                    feat_sizes = feat_sizes,
-                                                    mask_sizes = mask_sizes,
-                                                    level_start_index = level_start_index,
                                                     ) # hs: [num_layers, bs, num_queries, hidden_dim], reference_pts_layers: [num_layers, bs, num_queries, 4]
 
         ###########
@@ -646,11 +643,12 @@ def build_model(args, device):
         backbone,
         transformer,
         template_encoder,
-        num_classes=2,
         num_queries=args.NUM_QUERIES,
+        d_model=args.D_MODEL,
         aux_loss=args.AUX_LOSS,
-        dn_args=args.DN_ARGS,
+        num_levels=args.NUM_LEVELS,
         two_stage=args.TWO_STAGE,
+        dn_args=args.DN_ARGS,
         train_method = args.TRAIN_METHOD,
     )
 
