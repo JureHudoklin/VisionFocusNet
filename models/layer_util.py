@@ -76,26 +76,65 @@ class AdjustableConvolution2d(nn.Module):
 
    
 
-def roi_align_on_feature_map(feature_map, boxes, feature_sizes):
-    # feature_sizes [batch_size, 2] # [h, w]
-    # feature_map: [batch_size, channel, height, width]
-    # boxes: [num_layers, batch_size, num_boxes, 4] # cxcywh relative coordinates
+# def roi_align_on_feature_map(feature_map, boxes, feature_sizes):
+#     # feature_sizes [batch_size, 2] # [h, w]
+#     # feature_map: [batch_size, channel, height, width]
+#     # boxes: [num_layers, batch_size, num_boxes, 4] # cxcywh relative coordinates
+#     nl = boxes.shape[0]
+#     num_box = boxes.shape[2]
+#     bs, c, h, w = feature_map.shape
+    
+#     boxes_abs = boxes.detach()
+#     scaler = torch.stack([feature_sizes[:, 1], feature_sizes[:, 0], feature_sizes[:, 1], feature_sizes[:, 0]], dim=1).view(1, -1, 1, 4) # [batch_size, 4]
+#     boxes_abs = boxes_abs * scaler
+#     boxes_abs = box_cxcywh_to_xyxy(boxes_abs)
+#     boxes_abs = boxes_abs.permute(1, 0, 2, 3).contiguous().view(bs, -1, 4) # [batch_size, num_layers * num_boxes, 4]
+#     batch_index = torch.arange(bs, device=boxes.device).view(-1, 1, 1).repeat(1, nl, num_box).view(bs, -1, 1)
+#     boxes_with_batch_index = torch.cat([batch_index, boxes_abs], dim=-1) # [batch_size, num_layers * num_boxes, 5]
+    
+#     roi = roi_align(feature_map, boxes_with_batch_index.view(-1, 5), (1, 1), 1) # batch_size * num_layers * num_boxes, C, 1, 1
+#     roi = roi.view(bs, nl, num_box, c).permute(1, 0, 2, 3).contiguous() # num_layers, batch_size, num_boxes, C
+   
+#     return roi
+
+def roi_align_on_feature_map(feature_maps, boxes, feature_sizes):
+    """
+    Extrature aligned features from the predicted boxes
+
+    Arguments:
+    ----------
+    feature_maps :  list of torch.Tensor # list[batch_size, channel, height, width]
+        list of feature maps from different layers
+    boxes : torch.Tensor # [num_tf_layers, batch_size, num_boxes, 4]
+    feature_sizes : list of torch.Tensor # list [batch_size, 2] # [h, w]
+    """
+
     nl = boxes.shape[0]
     num_box = boxes.shape[2]
-    bs, c, h, w = feature_map.shape
-    
-    boxes_abs = boxes.detach()
-    scaler = torch.stack([feature_sizes[:, 1], feature_sizes[:, 0], feature_sizes[:, 1], feature_sizes[:, 0]], dim=1).view(1, -1, 1, 4) # [batch_size, 4]
-    boxes_abs = boxes_abs * scaler
+    num_fm = len(feature_maps)
+
+    # --- Get absolute BBOX size on the smallest feature map ---
+    smallest_size = feature_sizes[-1]
+    boxes_dt = boxes.detach()
+    scaler = torch.stack([smallest_size[:, 1], smallest_size[:, 0], smallest_size[:, 1], smallest_size[:, 0]], dim=1).view(1, -1, 1, 4) # [batch_size, 4]
+    boxes_abs = boxes_dt * scaler
     boxes_abs = box_cxcywh_to_xyxy(boxes_abs)
     boxes_abs = boxes_abs.permute(1, 0, 2, 3).contiguous().view(bs, -1, 4) # [batch_size, num_layers * num_boxes, 4]
+
+    # --- Add the batch index to each bbox ---
     batch_index = torch.arange(bs, device=boxes.device).view(-1, 1, 1).repeat(1, nl, num_box).view(bs, -1, 1)
     boxes_with_batch_index = torch.cat([batch_index, boxes_abs], dim=-1) # [batch_size, num_layers * num_boxes, 5]
     
-    roi = roi_align(feature_map, boxes_with_batch_index.view(-1, 5), (1, 1), 1) # batch_size * num_layers * num_boxes, C, 1, 1
-    roi = roi.view(bs, nl, num_box, c).permute(1, 0, 2, 3).contiguous() # num_layers, batch_size, num_boxes, C
-   
-    return roi
+    rois = []
+    for i, fm in enumerate(feature_maps):
+        bs, c, h, w = fm.shape
+        scale = 2**i
+        roi = roi_align(fm, boxes_with_batch_index.view(-1, 5), output_size = (1,1), spatial_scale = scale, sampling_ratio = -1) # batch_size * num_layers * num_boxes, C, 1, 1
+        roi = roi.view(bs, nl, num_box, c).permute(1, 0, 2, 3).contiguous() # num_layers, batch_size, num_boxes, C
+        rois.append(roi)
+
+    return rois
+
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])

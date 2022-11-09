@@ -162,11 +162,16 @@ class DETR(nn.Module):
         # Prepare for contrastive loss #
         ################################
         if self.train_method == 'contrastive' or self.train_method == 'both':
-            out_feat = self.contrastive_projection(src.permute(0, 2, 3, 1))
+            out_feat = []
+            for feat in feat_list:
+                feat_ = self.contrastive_projection(feat.permute(0, 2, 3, 1)) # [B, H, W, C*4] 
+                feat_ = feat_.permute(0, 3, 1, 2) # [B, C*4, H, W]
+                out_feat.append(feat_)
+            
             out_obj_enc = self.contrastive_projection(obj_encs)
             out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
             out["features"] = out_feat.permute(0, 3, 1, 2)
-            out["mask"] = mask
+            out["mask"] = mask_list
             out["obj_encs"] = out_obj_enc
             
             if self.train_method == "contrastive_only":
@@ -201,7 +206,9 @@ class DETR(nn.Module):
         ###########
         # Outputs #
         ###########
-        #rois = roi_align_on_feature_map(src, reference_pts_layers[1:], src_sizes) # [num_layers, bs, num_queries, hidden_dim]
+        mask_sizes = [torch.stack([torch.sum(~mask_list[i][:, :, 0], dim = 1), torch.sum(~mask_list[i][:, 0], dim=1)], dim=1) \
+                         for i in range(self.num_levels)]
+        rois = roi_align_on_feature_map(feat_list, reference_pts_layers[1:], mask_sizes) # [num_layers, bs, num_queries, hidden_dim]
         obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(ca.shape[0], 1, ca.shape[2], 1) # [BS, NQ, 1, C]
         
         #outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
