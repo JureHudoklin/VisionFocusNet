@@ -129,7 +129,8 @@ class DETR(nn.Module):
         #####################
         # Template Encoding #
         #####################
-        obj_encs = self.template_encoder(samples_targets) # [BS*num_tgts, C]
+        obj_encs: NestedTensor = checkpoint.checkpoint(self.template_encoder, samples_targets)
+        #obj_encs = self.template_encoder(samples_targets) # [BS*num_tgts, C]
         obj_encs = obj_encs.decompose()[0] # [BS*num_tgts, C]
         obj_encs = self.template_proj(obj_encs)# [BS*num_tgts, C]
         num_tgts = obj_encs.shape[0] // bs
@@ -170,7 +171,7 @@ class DETR(nn.Module):
             
             out_obj_enc = self.contrastive_projection(obj_encs)
             out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
-            out["features"] = out_feat.permute(0, 3, 1, 2)
+            out["features"] = out_feat
             out["mask"] = mask_list
             out["obj_encs"] = out_obj_enc
             
@@ -449,11 +450,12 @@ class SetCriterion(nn.Module):
     
     def loss_contrastive(self, outputs, targets):
         ### Extract outputs ###
-        image_feat = outputs["features"] # [B, C, H, W]
-        mask = outputs["mask"] # [B, H, W]
-        device = image_feat.device
-        B, C, H, W = image_feat.shape
-        image_sizes = torch.stack([torch.sum(~mask[:, 0], dim=1), torch.sum(~mask[:, :, 0], dim=1)], dim=1) # B, 2 w,h
+        image_feat = outputs["features"] # list[B, C, H, W]
+        masks = outputs["mask"] # list[B, H, W]
+        device = image_feat[0].device
+        B, C, _, _ = image_feat[0].shape
+        image_sizes = [torch.stack([torch.sum(~mask[:, 0], dim=1), torch.sum(~mask[:, :, 0], dim=1)], dim=1) \
+                        for mask in masks]#  list(B, 2) w,h
         
         obj_encs = outputs["obj_encs"] # [B*T, C]
         T = obj_encs.shape[0] // B
@@ -475,17 +477,21 @@ class SetCriterion(nn.Module):
         obj_encs_classes = obj_encs_classes[valid_tgts] # [B*T]
         
         ### Extract Features from image features ###
-        boxes_abs = [box_ops.box_cxcywh_to_xyxy(box) * torch.cat([image_sizes[i], image_sizes[i]], dim=0) for i, box in enumerate(base_boxes)] # [[N, 4], ...]
+        rois = []
+        for i, (feat, mask, size) in enumerate(zip(image_feat, masks, image_sizes)):
+            boxes_abs = [box_ops.box_cxcywh_to_xyxy(box) * torch.cat([size[i], size[i]], dim=0) for i, box in enumerate(base_boxes)] # [[N, 4], ...]
 
-        if len(boxes_abs) != self.bs:
-            raise ValueError("Batch size mismatch")
+            if len(boxes_abs) != self.bs:
+                raise ValueError("Batch size mismatch")
         
-        roi = roi_align(image_feat, boxes_abs, (4, 4), 1.0) # (B*M, C, 4, 4)
-        roi = F.max_pool2d(roi, kernel_size=4) # (B*M, C, 1, 1)
-        roi = roi.view(-1, C) # (B*M, C)
-        roi = roi / torch.norm(roi, dim=1, keepdim=True) # (B*M, C)
+            roi = roi_align(feat, boxes_abs, (4, 4), 1.0) # (B*M, C, 4, 4)
+            roi = F.max_pool2d(roi, kernel_size=4) # (B*M, C, 1, 1)
+            roi = roi.view(-1, C) # (B*M, C)
+            roi = roi / torch.norm(roi, dim=1, keepdim=True) # (B*M, C)
+            rois.append(roi)
         
-        
+        roi = torch.stack(rois, dim=-1).mean(dim=-1) # (B*M, C)
+
         ### Perform contrastive loss ###
         contrast = torch.einsum("nc,mc->nm", obj_encs, roi) # [B*T, B*M]
 
@@ -552,8 +558,9 @@ class SetCriterion(nn.Module):
 
         # Compute the average number of target boxes across the batch, for normalization purposes
         bs = len(targets)
+        device = outputs["pred_class_logits"].device
         num_boxes = sum(len(t["labels"]) for t in targets)
-        num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
+        num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device = device)
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
         

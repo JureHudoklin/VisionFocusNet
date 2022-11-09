@@ -40,7 +40,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "debug_DEFORM_2"
+        date = "vfn_deform_v1"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -98,7 +98,7 @@ def main(args):
 
 
     ######### GET DATASET #########
-    #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+    train_data_loader, test_data_loader = get_coco_data_generator(cfg)
     base_ds = build_dataset("val", cfg)
     base_ds = get_coco_api_from_dataset(base_ds)
     
@@ -109,7 +109,7 @@ def main(args):
     #train_data_loader, test_data_loader = get_365_data_generator(cfg)
     
     # MIX
-    train_data_loader, test_data_loader = get_mix_data_generator(cfg)
+    #train_data_loader, test_data_loader = get_mix_data_generator(cfg)
     
     
     #########################################################

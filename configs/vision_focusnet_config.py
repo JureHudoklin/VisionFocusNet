@@ -11,11 +11,11 @@ class Config():
     LR = 0.0001
     LR_BACKBONE = 1e-5
     WEIGHT_DECAY = 0.0001
-    TRAIN_METHOD = "detection_only" # "contrastive_only", "detection_only", "both"
+    TRAIN_METHOD = "both" # "contrastive_only", "detection_only", "both"
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
     
-    BATCH_SIZE = 14
+    BATCH_SIZE = 10
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -44,7 +44,7 @@ class Config():
     DROPOUT = 0.0
     N_HEADS = 8
     NUM_LEVELS = 2
-    NUM_QUERIES = 100 # Num of object queries
+    NUM_QUERIES = 200 # Num of object queries
     TWO_STAGE = False
     D_MODEL = 256
     DIM_FEEDFORWARD = 2048
