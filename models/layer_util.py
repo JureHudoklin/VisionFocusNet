@@ -107,11 +107,16 @@ def roi_align_on_feature_map(feature_maps, boxes, feature_sizes):
         list of feature maps from different layers
     boxes : torch.Tensor # [num_tf_layers, batch_size, num_boxes, 4]
     feature_sizes : list of torch.Tensor # list [batch_size, 2] # [h, w]
+    
+    Returns:
+    --------
+    rois : list of Tensor # list [num_tf_layers, batch_size, num_boxes, C]
     """
 
     nl = boxes.shape[0]
     num_box = boxes.shape[2]
     num_fm = len(feature_maps)
+    bs = feature_maps[0].shape[0]
 
     # --- Get absolute BBOX size on the smallest feature map ---
     smallest_size = feature_sizes[-1]

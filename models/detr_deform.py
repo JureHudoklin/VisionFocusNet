@@ -208,12 +208,13 @@ class DETR(nn.Module):
         ###########
         mask_sizes = [torch.stack([torch.sum(~mask_list[i][:, :, 0], dim = 1), torch.sum(~mask_list[i][:, 0], dim=1)], dim=1) \
                          for i in range(self.num_levels)]
-        rois = roi_align_on_feature_map(feat_list, reference_pts_layers[1:], mask_sizes) # [num_layers, bs, num_queries, hidden_dim]
+        rois = roi_align_on_feature_map(feat_list, reference_pts_layers[1:], mask_sizes) # list[num_layers, bs, num_queries, hidden_dim]
+        rois = torch.stack(rois, dim = -1).mean(dim = -1) # [num_layers, bs, num_queries, hidden_dim]
         obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(ca.shape[0], 1, ca.shape[2], 1) # [BS, NQ, 1, C]
         
         #outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
         outputs_class = self.class_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
-        output_sim = self.sim_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
+        output_sim = self.sim_embed(rois-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
         
         # DB post processing
