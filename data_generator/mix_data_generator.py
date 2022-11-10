@@ -21,10 +21,10 @@ from util.misc import nested_tensor_from_tensor_list
 
 class MIXLoader():
     def __init__(self, 
-                root_dir, 
+                root_dirs, 
                 split,
-                scenes = None,
-                datasets = None,
+                valid_scenes = None,
+                valid_datasets = None,
                 keep_noobj_images = False,
                 inp_transforms = None,
                 base_transforms = None,
@@ -33,10 +33,10 @@ class MIXLoader():
                 max_images_per_dataset = None,
                 ) -> None:
         
-        self.root_dir = root_dir    
+        self.root_dirs = root_dirs    
         self.split = split
-        self.scenes = scenes
-        self.datasets = datasets
+        self.valid_scenes = valid_scenes
+        self.valid_datasets = valid_datasets
         self.keep_noobj_images = keep_noobj_images
         
         self._inp_transforms = inp_transforms
@@ -49,14 +49,37 @@ class MIXLoader():
         self.to_tensor = torchvision.transforms.ToTensor()
         self.to_PIL = torchvision.transforms.ToPILImage()
         
-        self.dataset, self.annotations, self.target_annotations = self._load_dataset()
+        self.datasets = []
+        self.annotations = []
+        self.target_annotations = []
+
+        for ds_root_path in root_dirs:
+            dataset, annotations, target_annotations = self._load_dataset(ds_root_path)
+            self.datasets.append(dataset)
+            self.annotations.append(annotations)
+            self.target_annotations.append(target_annotations)
+
         self.mc_to_int = self._macroclass_to_int()
+        print(f"Macroclass to int:" ,self.mc_to_int)
         
         self.fail_save = self.__getitem__(0)
+
+
+    def _macroclass_to_int(self, offset = 0):
+        mc_all = []
+        for t_a in self.target_annotations:
+            macroclasses = [it["macroclass"] for moid, it in t_a.items()]
+            mc_all.extend(macroclasses)
+
+        macroclasses = sorted(list(set(mc_all)))
+        mc_to_int = {mc: i+offset for i, mc in enumerate(macroclasses)}
+        
+        return mc_to_int
  
-    def _load_dataset(self):
+
+    def _load_dataset(self, ds_root_path):
         # Load Dataset
-        dataset_info = json.load(open(os.path.join(self.root_dir, "dataset_info.json"), "r"))
+        dataset_info = json.load(open(os.path.join(ds_root_path, "dataset_info.json"), "r"))
         annotations = dataset_info["annotations"]
         target_annotations = dataset_info["targets_info"]
         
@@ -64,10 +87,12 @@ class MIXLoader():
         # Sort dataset
         ann_total = {}
         for img_id, ann in annotations.items():
-            if self.scenes is not None and ann["scene"] not in self.scenes:
-                continue
-            if self.datasets is not None and ann["dataset"] not in self.datasets:
-                continue
+            if self.valid_scenes is not None:
+                if ann["scene"] not in self.valid_scenes:
+                    continue
+            if self.valid_datasets is not None:
+                if ann["dataset"] not in self.valid_datasets:
+                    continue
             if ann["dataset"] not in ann_total:
                 ann_total[ann["dataset"]] = []
             ann_total[ann["dataset"]].append(img_id)
@@ -80,30 +105,29 @@ class MIXLoader():
             
         dataset = []
         for ds, img_ids in ann_total.items():
+            img_ids = list(img_ids)
             dataset.extend(img_ids)
             
         dataset = np.array(sorted(dataset), dtype=np.int)
+        
+        print(f"Dataset: {ds_root_path} has {len(dataset)} images")
             
         return dataset, annotations, target_annotations
     
-    def _macroclass_to_int(self, offset = 0):
-        macroclasses = [it["macroclass"] for moid, it in self.target_annotations.items()]
-        macroclasses = sorted(list(set(macroclasses)))
-        mc_to_int = {mc: i+offset for i, mc in enumerate(macroclasses)}
-        
-        return mc_to_int
-    
-    def _load_annotation(self, img_id):
+    def _format_annotation(self, ann):
         target = Target()
-        img_ann = self.annotations[str(img_id)]
         
-        scene = img_ann["scene"]
-        dataset = img_ann["dataset"]
-        w, h = img_ann["width"], img_ann["height"]
-        classes = img_ann["classes"]
-        boxes = img_ann["boxes"]
+        image_id = ann["image_id"]
+        scene = ann["scene"]
+        dataset = ann["dataset"]
+        w, h = ann["width"], ann["height"]
+        classes = ann["classes"]
+        boxes = ann["boxes"]
         
-        target["image_id"] = img_id
+        
+        target.scene = scene
+        target.dataset = dataset
+        target["image_id"] = image_id
         target["boxes"] = boxes
         target["classes"] = classes
         target["orig_size"] = torch.tensor([h, w])
@@ -113,15 +137,28 @@ class MIXLoader():
         target.calc_iscrowd()
         
         return target
-        
+
     def __len__(self):
-        return len(self.dataset)
+        lens = [len(ds) for ds in self.datasets]
+        return sum(lens)
 
     def __getitem__(self, idx):
-        img_id = self.dataset[idx]
-        base_target = self._load_annotation(img_id)
-        image_id = base_target["image_id"]
-        img_path = os.path.join(self.root_dir, "images", f"{image_id:07d}.png")
+        # --- Format the idx ---
+        ds_lens = [len(ds) for ds in self.datasets]
+        ds_idx = np.argmax(np.cumsum(ds_lens) > idx)
+        idx = idx - int(np.sum(ds_lens[:ds_idx]))
+
+        # --- Load the annotation ---
+        root_dir = self.root_dirs[ds_idx]
+        dataset = self.datasets[ds_idx]
+        annotations = self.annotations[ds_idx]
+        img_id = dataset[idx]
+        img_ann = annotations[str(img_id)]
+        base_target = self._format_annotation(img_ann)
+        img_type = img_ann["image_type"]
+
+        # --- Load the image ---
+        img_path = os.path.join(root_dir, "images", f"{img_id:07d}.{img_type}")
         with PIL.Image.open(img_path) as img:
             img.load()
         
@@ -132,7 +169,7 @@ class MIXLoader():
             img, base_target = self._base_transforms(img, base_target)
             
         ### Load tgt labels ###
-        img, tgt_imgs, tgt_target = self.format_target_lbls(img, base_target)
+        img, tgt_imgs, tgt_target = self.format_target_lbls(img, base_target, ds_idx)
         tgt_target.make_valid()
         if len(tgt_imgs) < self.num_tgts:
             place_holder_img = self.to_PIL(torch.zeros(3, 64, 64))
@@ -158,19 +195,26 @@ class MIXLoader():
         
         return img, tgt_imgs, target
         
-    
-    def format_target_lbls(self, img, target):
+       
+    def format_target_lbls(self, img, target, ds_idx):
         tgt_target = copy.deepcopy(target)
+        areas = tgt_target["area"]
+        print(areas)
+        keep_idx = torch.where(areas > 600)[0]
+        tgt_target.filter(keep_idx)
+        print(tgt_target["area"])
+        
         classes = tgt_target["classes"]
         
-        macro_classes = [self.target_annotations[str(c.item())]["macroclass"] for c in classes]
+        target_annotations = self.target_annotations[ds_idx]
+        macro_classes = [target_annotations[str(c.item())]["macroclass"] for c in classes]
         macro_classes = [self.mc_to_int[mc] for mc in macro_classes]
         macro_classes = torch.tensor(macro_classes, dtype=torch.long)
       
         if len(classes) > 0:
             random_idx = random.sample(range(len(classes)), 1)[0]
         else:
-            return img, None, tgt_target
+            return img, [], tgt_target
 
         selected_class = classes[random_idx]
         selected_macro_class = macro_classes[random_idx]
@@ -182,13 +226,14 @@ class MIXLoader():
         tgt_target.update(**{"labels": torch.ones_like(tgt_target["classes"]), "sim_labels" : sim_labels})
         
         # Set similarity indices:
-        tgt_imgs = self._get_tgt_img(selected_class)
+        tgt_imgs = self._get_tgt_img(selected_class, ds_idx)
         tgt_target["valid_targets"][:len(tgt_imgs)] = True
         return img, tgt_imgs, tgt_target
         
-    def _get_tgt_img(self, obj_id):
+    def _get_tgt_img(self, obj_id, ds_idx):
         obj_id = obj_id.item()
-        target_img_path = os.path.join(self.root_dir, "templates")
+        root_dir = self.root_dirs[ds_idx]
+        target_img_path = os.path.join(root_dir, "templates")
             
         tgt_imgs = []
         paths_all = []
@@ -214,11 +259,11 @@ class MIXLoader():
             tgt_imgs.append(tgt_img)
             
         return tgt_imgs
- 
+
     
 def build_MIX_dataset(image_set, args):
-    root = args.MIX_PATH
-    assert os.path.exists(root), "Please download MIX dataset to {}".format(root)
+    root = [args.MIX_PATH, "/home/jure/datasets/ycbv_processed"]
+    #assert os.path.exists(root), "Please download MIX dataset to {}".format(root)
     
     inp_transform = make_input_transform()
     base_transforms = make_base_transforms(image_set)
@@ -228,10 +273,10 @@ def build_MIX_dataset(image_set, args):
                                          random_rotate=False,
                                          use_sl_transforms=True,)
     
-    dataset = MIXLoader(root_dir=root,
+    dataset = MIXLoader(root_dirs=root,
                         split=image_set,
-                        scenes = None,
-                        datasets = None,
+                        valid_scenes= None,
+                        valid_datasets= None,
                         base_transforms = base_transforms,
                         tgt_transforms = tgt_transforms,
                         inp_transforms = inp_transform,

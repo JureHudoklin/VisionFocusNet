@@ -46,7 +46,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
                 step = batch+epoch*len(data_loader)
                 write_summary(writer, merged, step, f"running_stats")
 
-            if batch % 100 == 0:
+            if batch % 1000 == 0:
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
                 writer.add_figure("traing/img", fig, batch+epoch*total_batches)
                 plt.close(fig)
