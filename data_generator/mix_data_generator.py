@@ -31,6 +31,7 @@ class MIXLoader():
                 tgt_transforms = None,
                 num_tgts = 3,
                 max_images_per_dataset = None,
+                min_box_area = 600,
                 ) -> None:
         
         self.root_dirs = root_dirs    
@@ -45,6 +46,7 @@ class MIXLoader():
 
         self.num_tgts = num_tgts
         self.max_images_per_dataset = max_images_per_dataset
+        self.min_box_area = min_box_area
         
         self.to_tensor = torchvision.transforms.ToTensor()
         self.to_PIL = torchvision.transforms.ToPILImage()
@@ -58,6 +60,12 @@ class MIXLoader():
             self.datasets.append(dataset)
             self.annotations.append(annotations)
             self.target_annotations.append(target_annotations)
+            
+        if self.split == "test":
+            assert len(self.root_dirs) == 1, "Test split can only process 1 dataset at a time."
+            dataset, annotations = self._test_format(self.datasets[0], self.annotations[0])
+            self.datasets = [dataset]
+            self.annotations = [annotations]
 
         self.mc_to_int = self._macroclass_to_int()
         print(f"Macroclass to int:" ,self.mc_to_int)
@@ -114,6 +122,28 @@ class MIXLoader():
             
         return dataset, annotations, target_annotations
     
+    def _test_format(self, dataset, annotations):
+        ann_per_class = {}
+        dataset_per_class = []
+        ann_id = 0
+        for ann in annotations.values():
+            classes = ann["classes"]
+            unique_classes = list(set(classes))
+            for cls in unique_classes:
+                same_cls_idx = [i for i, c in enumerate(classes) if c == cls]
+                ann_new = copy.deepcopy(ann)
+                ann_new["classes"] = classes[same_cls_idx]
+                ann_new["boxes"] = ann_new["boxes"][same_cls_idx]
+                ann_new["macroclass"] = ann_new["macroclass"][same_cls_idx]
+                ann_per_class[ann_id] = ann_new
+                dataset_per_class.append(ann_id)
+                ann_id += 1
+            
+        dataset_per_class = np.array(dataset_per_class, dtype=np.int)
+        
+        return dataset_per_class, ann_per_class
+        
+        
     def _format_annotation(self, ann):
         target = Target()
         
@@ -152,9 +182,10 @@ class MIXLoader():
         root_dir = self.root_dirs[ds_idx]
         dataset = self.datasets[ds_idx]
         annotations = self.annotations[ds_idx]
-        img_id = dataset[idx]
-        img_ann = annotations[str(img_id)]
+        ann_id = dataset[idx]
+        img_ann = annotations[str(ann_id)]
         base_target = self._format_annotation(img_ann)
+        img_id = base_target["image_id"]
         img_type = img_ann["image_type"]
 
         # --- Load the image ---
@@ -200,9 +231,8 @@ class MIXLoader():
         tgt_target = copy.deepcopy(target)
         areas = tgt_target["area"]
         print(areas)
-        keep_idx = torch.where(areas > 600)[0]
+        keep_idx = torch.where(areas > self.min_box_area)[0]
         tgt_target.filter(keep_idx)
-        print(tgt_target["area"])
         
         classes = tgt_target["classes"]
         
@@ -282,6 +312,7 @@ def build_MIX_dataset(image_set, args):
                         inp_transforms = inp_transform,
                         num_tgts=args.NUM_TGTS,
                         max_images_per_dataset = None,
+                        min_box_area=600,
                         )
     return dataset
 
