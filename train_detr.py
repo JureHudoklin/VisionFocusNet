@@ -6,12 +6,15 @@ import time
 import os
 import argparse
 
+
 import torch.nn as nn
 import torchvision
 import matplotlib.pyplot as plt
 import torch.multiprocessing
+from pycocotools.coco import COCO
 torch.multiprocessing.set_sharing_strategy('file_system')
 from torchsummary import summary
+from glob import glob
 from torch.utils.tensorboard import SummaryWriter
 
 from engine import train_one_epoch, evaluate
@@ -22,7 +25,7 @@ from data_generator.coco import get_coco_data_generator, build_dataset, get_coco
 from data_generator.AVD import get_avd_data_generator, build_AVD_dataset
 from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_dataset
 from data_generator.Objects365 import get_365_data_generator
-from data_generator.mix_data_generator_v2 import get_mix_data_generator, build_MIX_dataset
+from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
 
 
 def main(args):
@@ -98,18 +101,18 @@ def main(args):
 
 
     ######### GET DATASET #########
-    train_data_loader, test_data_loader = get_coco_data_generator(cfg)
-    base_ds = build_dataset("val", cfg)
-    base_ds = get_coco_api_from_dataset(base_ds)
-    
-    # AVD
-    #train_data_loader, test_data_loader = get_gmu_data_generator(cfg)
-    
-    # GMU
+    # COCO
+    #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+    # 365
     #train_data_loader, test_data_loader = get_365_data_generator(cfg)
-    
+ 
     # MIX
-    train_data_loader, test_data_loader, coco_gt = get_mix_data_generator(cfg)
+    train_data_loader, test_data_loader = get_mix_data_generator(cfg)
+    
+    # Get COCO GT for evaluation
+    val_base_dir = args.TEST_DATASETS[0]
+    gt_path = glob(os.path.join(val_base_dir, "*coco_gt.json"))[0]
+    coco_ds = COCO(gt_path)
     
     
     #########################################################
@@ -140,7 +143,7 @@ def main(args):
         print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
         
         ################ Eval ###############
-        stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loader, coco_gt, epoch, writer, save_dir, cfg)
+        stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loader, coco_ds, epoch, writer, save_dir, cfg)
         write_summary(writer, stats[0], epoch, "val_loss")
         write_summary(writer, stats[1], epoch, "val_stats")
         write_summary(writer, coco_stats, epoch, "val")

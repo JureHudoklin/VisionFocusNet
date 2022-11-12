@@ -97,12 +97,18 @@ class Config():
     NUM_TGTS = 3
     TGT_MIN_AREA = 500
     PIN_MEMORY = True
-    #COCO_PATH = "/hdd/datasets/COCO/images"
-    MIX_PATH = "/home/jure/datasets/mix_dataset"
+    
     COCO_PATH = "/home/jure/datasets/COCO/images"
-    AVD_PATH = "/home/jure/datasets/AVD/ActiveVisionDataset"
-    GMU_PATH = "/home/jure/datasets/GMU_kitchens/data"
     OBJECTS_365_PATH = "/home/jure/datasets/Objects365/data"
+    AVD_PATH = "/home/jure/datasets/AVD"
+    GMU_PATH = "/home/jure/datasets/GMU_kitchens"
+    TLESS_PATH = "/home/jure/datasets/T-LESS"
+    YCBV_PATH = "/home/jure/datasets/ycbv_processed"
+    ICBIN_TRAIN_PATH = "/home/jure/datasets/icbin/train"
+    ICBIN_VAL_PATH = "/home/jure/datasets/icbin/val"
+    
+    TRAIN_DATASETS = [TLESS_PATH, YCBV_PATH, AVD_PATH, ICBIN_TRAIN_PATH, ICBIN_VAL_PATH]
+    TEST_DATASETS = [GMU_PATH]
 
     def __init__(self, load_path = None, save_path = None):
         """
