@@ -12,7 +12,7 @@ from data_generator.AVD import build_AVD_dataset, get_avd_data_generator
 from data_generator.GMU_kitchens import build_GMU_dataset, get_gmu_data_generator
 from data_generator.Objects365 import build_365_dataset, get_365_data_generator
 from data_generator.mixed_generator import get_concat_dataset
-from data_generator.mix_data_generator import build_MIX_dataset, get_mix_data_generator
+from data_generator.mix_data_generator_v2 import build_MIX_dataset, get_mix_data_generator
 from data_generator.transforms import DeNormalize
 from util.data_utils import display_data
 from configs.vision_focusnet_config import Config
@@ -29,15 +29,7 @@ if __name__ == "__main__":
     random.seed(seed)
     
     cfg = Config()
-    
-    spatial_shapes = [(15, 15), (8, 8), (4, 4), (2, 2), (1, 1)]
-    
-    spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long)
-    print(spatial_shapes.shape)
-    level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1])) # 
-    print(level_start_index)
-    exit()
-    
+
     # denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     
     # inp = nested_tensor_from_tensor_list([torch.rand(3, 224, 224), torch.rand(3, 165, 224)])
@@ -82,12 +74,19 @@ if __name__ == "__main__":
     if True:
         
         #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
-        train_data_loader, test_data_loader = get_mix_data_generator(cfg)
+        train_data_loader, test_data_loader, _ = get_mix_data_generator(cfg)
+        test_it = iter(train_data_loader)
         i = 0
-        print(len(train_data_loader))
-        
-        data = next(iter(train_data_loader))
-        display_data(data)
+        print(len(test_data_loader))
+        exit()
+        data = next(test_it)
+        display_data(data, "test1")
+        # data = next(test_it)
+        # display_data(data, "test2")
+        # data = next(test_it)
+        # display_data(data, "test3")
+
+        #display_data(data)
 
         
     if False:

@@ -27,6 +27,7 @@ class Config():
     SIM_LOSS_COEF = 1
     BBOX_LOSS_COEF = 5.0
     GIOU_LOSS_COEF = 2.0
+    CONTRASTIVE_LOSS_COEF = 1.0
     
     
     ############

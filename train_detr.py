@@ -22,7 +22,7 @@ from data_generator.coco import get_coco_data_generator, build_dataset, get_coco
 from data_generator.AVD import get_avd_data_generator, build_AVD_dataset
 from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_dataset
 from data_generator.Objects365 import get_365_data_generator
-from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
+from data_generator.mix_data_generator_v2 import get_mix_data_generator, build_MIX_dataset
 
 
 def main(args):
@@ -40,7 +40,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "vfn_deform_v1"
+        date = "debug"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -109,7 +109,7 @@ def main(args):
     #train_data_loader, test_data_loader = get_365_data_generator(cfg)
     
     # MIX
-    #train_data_loader, test_data_loader = get_mix_data_generator(cfg)
+    train_data_loader, test_data_loader, coco_gt = get_mix_data_generator(cfg)
     
     
     #########################################################
@@ -140,10 +140,10 @@ def main(args):
         print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
         
         ################ Eval ###############
-        # stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loader, base_ds, device, epoch, log_save_dir)
-        # write_summary(writer, stats[0], epoch, "val_loss")
-        # write_summary(writer, stats[1], epoch, "val_stats")
-        # write_summary(writer, coco_stats, epoch, "val")
+        stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loader, coco_gt, epoch, writer, save_dir, cfg)
+        write_summary(writer, stats[0], epoch, "val_loss")
+        write_summary(writer, stats[1], epoch, "val_stats")
+        write_summary(writer, coco_stats, epoch, "val")
         
         
 if __name__ == "__main__":

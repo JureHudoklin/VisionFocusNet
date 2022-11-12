@@ -69,7 +69,7 @@ def make_tgt_transforms(image_set,
 
     raise ValueError(f"unknown {image_set}")
 
-def display_data(data):
+def display_data(data, save_name="dataset_visualize"):
     """ Given a batch of data it displays: Images, Tgt Images and bounding boxes
 
     Parameters
@@ -136,7 +136,7 @@ def display_data(data):
             ax.imshow(img.permute(1, 2, 0))
 
     fig.tight_layout()
-    plt.savefig('dataset_visualize.png', dpi=300)
+    plt.savefig(f'{save_name}.png', dpi=300)
 
 
 def collate_fn(batch):

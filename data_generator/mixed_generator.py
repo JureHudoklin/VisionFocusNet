@@ -19,12 +19,11 @@ class ConcatDataset(Dataset):
         return sum(len(d) for d in self.datasets)
 
     def __getitem__(self, idx):
-        indices = self.cumulative_lengths - idx
-        # Get first non-negative index
-        min_idx = bisect.bisect_left(indices, 0)
-        if min_idx > 0:
-            idx = idx - self.cumulative_lengths[min_idx - 1]
-        ds = self.datasets[min_idx]
+        ds_lens = self.data_lengths
+        ds_idx = np.argmax(np.cumsum(ds_lens) > idx)
+        idx = idx - int(np.sum(ds_lens[:ds_idx]))
+        
+        ds = self.datasets[ds_idx]
         img, tgt_img, target = ds[idx]
 
         return img, tgt_img, target

@@ -482,7 +482,10 @@ class SetCriterion(nn.Module):
             boxes_abs = [box_ops.box_cxcywh_to_xyxy(box) * torch.cat([size[i], size[i]], dim=0) for i, box in enumerate(base_boxes)] # [[N, 4], ...]
 
             if len(boxes_abs) != self.bs:
-                raise ValueError("Batch size mismatch")
+                contrast_out = torch.tensor(0.0, device=device)
+                loss = {"loss_contrastive": contrast_out}
+                stats = {"loss_contrastive": contrast_out.detach()}
+                return loss, stats
         
             roi = roi_align(feat, boxes_abs, (4, 4), 1.0) # (B*M, C, 4, 4)
             roi = F.max_pool2d(roi, kernel_size=4) # (B*M, C, 1, 1)
@@ -615,30 +618,37 @@ class PostProcessor(nn.Module):
         """
         img_sizes = [target['orig_size'] for target in targets]
         img_sizes = torch.stack(img_sizes, dim=0)
-        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
+        out_class_logits, pred_sim_logits, out_bbox = outputs['pred_class_logits'], outputs['pred_sim_logits'], outputs['pred_boxes']
+        # out_class_logits = # [B, Q, C]
+        # pred_sim_logits = # [B, Q, N]
         
-        assert out_logits.shape[0] == img_sizes.shape[0]
+        assert out_class_logits.shape[0] == img_sizes.shape[0]
         assert img_sizes.shape[1] == 2
+        class_ids =  [target['classes'] for target in targets] # B, N
+        class_ids = [target[0] if len(target) > 0 else torch.tensor(0, dtype=torch.long, device = target.device) for target in class_ids]
+        class_ids = torch.stack(class_ids, dim=0) # B
+        
+        # Check if any images has no objects
+        no_obj_batch = torch.where(class_ids == 0, torch.tensor(1, dtype=torch.long, device = class_ids.device), torch.tensor(0, dtype=torch.long, device = class_ids.device))
+        no_obj_batch = no_obj_batch.view(-1, 1).repeat(1, out_class_logits.shape[1]) # [B*Q]
+        
+        prob = out_class_logits.softmax(-1) # [B, Q, 2]
+        prob = torch.where(no_obj_batch == 1, prob[:, :, 0], prob[:, :, 1])         
+        
+        topk_values, topk_indexes = torch.topk(prob, self.num_select, dim=1) # [B, M]
+        labels = torch.ones_like(topk_values) * class_ids[:, None] # [B, M]
+        boxes = torch.gather(out_bbox, 1, topk_indexes[:, :, None].repeat(1, 1, 4)) # [B, M, 4]
 
-        prob = out_logits.sigmoid() # [N, 100, num_classes]
-        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), self.num_select, dim=1)
-        scores = topk_values # [N, num_select]
-        topk_boxes = topk_indexes // out_logits.shape[2]
-        labels = topk_indexes % out_logits.shape[2] # [N, num_select]
-        boxes = box_convert(out_bbox, 'cxcywh', 'xyxy') # [N, num_select, 4]
-        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4)) # [N, num_select, 4]
+        boxes = box_ops.box_cxcywh_to_xyxy(boxes)
+        scores = topk_values # [B, M]
         
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = img_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         boxes = boxes * scale_fct[:, None, :]
-        
-        # Cre
-
 
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
-        #print(results)
-
+        
         return results
 
 def build_model(args, device):
@@ -670,6 +680,11 @@ def build_model(args, device):
     # Regular Loss Weights
     matcher = build_matcher(args)
     weight_dict = {"loss_ce": args.CLASS_LOSS_COEF, "loss_sim" : args.SIM_LOSS_COEF, "loss_bbox": args.BBOX_LOSS_COEF, "loss_giou" : args.GIOU_LOSS_COEF}
+    
+    if args.TRAIN_METHOD == "detection_only":
+        weight_dict.update({"loss_contrastive": 0.0})
+    else:
+        weight_dict.update({"loss_contrastive": args.CONTRASTIVE_LOSS_COEF})
     
     if args.AUX_LOSS:
         aux_weight_dict = {}
