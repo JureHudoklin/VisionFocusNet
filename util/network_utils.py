@@ -75,7 +75,7 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
             ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="green", linewidth=2))
             obj_sim = targets[b]["sim_labels"][i].item()
-            ax.text(x, y+h, f"SIM:{obj_sim}", color="green", fontsize=4)
+            ax.text(x, y+h*img_h, f"SIM:{obj_sim}", color="green", fontsize=4)
         
         # Plot Predicted Boxes
         if "pred_class_logits" in outputs and "pred_sim_logits" in outputs and "pred_boxes" in outputs:

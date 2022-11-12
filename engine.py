@@ -150,7 +150,7 @@ def evaluate(model, criterion, postprocessor, data_loader, coco_gt, epoch, write
             if batch % 10 == 0:
                 ETA = (time.time() - start_time) * (total_batches-batch) / batch
                 ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
-                description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
+                description = f"E: [EVAL:{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
                 print(description, )
         
             if batch % 100 == 0:
