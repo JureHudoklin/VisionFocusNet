@@ -72,7 +72,7 @@ class MIXLoader():
             
 
         self.cat_to_int = self._category_to_int()
-        self.int_to_supint = self._int_to_supint()
+        self.sup_to_int = self._supercategory_to_int()
         
         self.fail_save = self.__getitem__(0)
 
@@ -91,6 +91,16 @@ class MIXLoader():
                 cat_to_int[it["name"]] = it["id"]
             
         return cat_to_int
+    
+    def _supercategory_to_int(self, offset = 0):
+        mc_all = []
+        for t_a in self.targets:
+            supercategory = [it["supercategory"] for it in t_a]
+            mc_all.extend(supercategory)
+
+        supercategory = sorted(list(set(mc_all)))
+        sup_to_int = {mc: i+offset for i, mc in enumerate(supercategory)}
+        return sup_to_int
 
     def _int_to_supint(self, offset = 0):
         mc_all = []
@@ -101,7 +111,7 @@ class MIXLoader():
         supercategories = sorted(list(set([it[1] for it in mc_all])))
         sup_to_int = {mc: i+offset for i, mc in enumerate(supercategories)}
 
-        int_to_supint = {self.cat_to_int[mc]: sup_to_int(sc) for mc, sc in mc_all}
+        int_to_supint = {self.cat_to_int[mc]: sup_to_int[sc] for mc, sc in mc_all}
         
         return int_to_supint
 
@@ -114,7 +124,7 @@ class MIXLoader():
         with open(path[0], "r") as f:
             ds_ann = json.load(f)
             
-        if self.max_images_per_dataset is not None:
+        if self.max_images_per_dataset is not None and len(ds_ann["images"]) > self.max_images_per_dataset:
             ds_ann["images"] = random.sample(ds_ann["images"], self.max_images_per_dataset)
             
         images = ds_ann["images"]
@@ -123,7 +133,9 @@ class MIXLoader():
         
         img_to_ann = {img["id"]: [] for img in images}
         for ann in annotations:
-            img_to_ann[ann["image_id"]].append(ann)
+            img_id = ann["image_id"]
+            if img_id in img_to_ann:
+                img_to_ann[img_id].append(ann)
 
         return images, annotations, categories, img_to_ann
             
@@ -138,10 +150,7 @@ class MIXLoader():
             box = ann["bbox"]
             box[2], box[3] = box[0] + box[2], box[1] + box[3] # convert to xyxy
             boxes.append(box)
-            cat_id = ann["category_id"]
-            cat_name = [cat["name"] for cat in self.targets[ds_idx] if cat["id"] == cat_id][0]
-            clas = self.cat_to_int[cat_name]
-            classes.append(clas)
+            classes.append(ann["category_id"])
             
         
         target["boxes"] = boxes
@@ -207,6 +216,21 @@ class MIXLoader():
         
         img, base_target = self._inp_transforms(img, base_target)
         
+        ### Transform base target and target classes
+        new_classes = []
+        for cl in tgt_target["classes"]:
+            cl_name = [it["name"] for it in self.targets[ds_idx] if it["id"] == cl.item()][0]
+            new_cl = self.cat_to_int[cl_name]
+            new_classes.append(new_cl)
+        tgt_target["classes"] = torch.as_tensor(new_classes)
+            
+        new_classes = []
+        for cl in base_target["classes"]:
+            cl_name = [it["name"] for it in self.targets[ds_idx] if it["id"] == cl.item()][0]
+            new_cl = self.cat_to_int[cl_name]
+            new_classes.append(new_cl)
+        base_target["classes"] = torch.as_tensor(new_classes)
+        
         ### Return the dictionary form of the target ###
         tgt_target = tgt_target.as_dict
         base_target = {f"base_{k}" : v for k, v in base_target.as_dict.items()}
@@ -225,10 +249,12 @@ class MIXLoader():
         classes = tgt_target["classes"]
         
         targets = self.targets[ds_idx]
-        suppercategories  =  [self.int_to_supint[clas] for clas in classes]
-        
-        macro_classes = [self.sup_to_int[mc] for mc in suppercategories]
-        macro_classes = torch.tensor(suppercategories, dtype=torch.long)
+        sup_cat = []
+        for cl in classes:
+            super_cat = [cat["supercategory"] for cat in targets if cat["id"] == cl.item()][0]  
+            sup_cat.append(super_cat)
+        macro_classes = [self.sup_to_int[cl] for cl in sup_cat]
+        macro_classes = torch.tensor(macro_classes, dtype=torch.long)
       
         if len(classes) > 0:
             random_idx = random.sample(range(len(classes)), 1)[0]
@@ -314,8 +340,8 @@ def build_MIX_dataset(image_set, args):
                         tgt_transforms = tgt_transforms,
                         inp_transforms = inp_transform,
                         num_tgts=args.NUM_TGTS,
-                        max_images_per_dataset = 20000 if image_set == "train" else None,
-                        min_box_area= 600 if image_set == "train" else 100,
+                        max_images_per_dataset = 10000 if image_set == "train" else None,
+                        min_box_area= 300 if image_set == "train" else 100,
                         )
     return dataset
 

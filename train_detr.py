@@ -43,7 +43,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "debug"
+        date = "vfn_deform_v1_finetune"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -110,7 +110,7 @@ def main(args):
     train_data_loader, test_data_loader = get_mix_data_generator(cfg)
     
     # Get COCO GT for evaluation
-    val_base_dir = args.TEST_DATASETS[0]
+    val_base_dir = cfg.TEST_DATASETS[0]
     gt_path = glob(os.path.join(val_base_dir, "*coco_gt.json"))[0]
     coco_ds = COCO(gt_path)
     
