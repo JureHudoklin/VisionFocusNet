@@ -348,7 +348,7 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
         target_classes[idx] = target_classes_o # [bs, q]
         
-        loss_sim = focal_loss(outputs_logits target_classes, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
+        loss_sim = focal_loss(outputs_logits, target_classes, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
         loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
         loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
         
@@ -438,9 +438,9 @@ class SetCriterion(nn.Module):
         
         ### Extract from targets ###
         boxes = [tgt["boxes"] for tgt in targets] # [B, T, 4]
-        classes = [tgt["classes"] for tgt in targets] # [B, T]
+        classes = [tgt["sim_classes"] for tgt in targets] # [B, T]
         base_boxes = [tgt["base_boxes"] for tgt in targets] # [[N, 4], [G, 4], ...]
-        base_classes = [tgt["base_classes"] for tgt in targets] # [[N], [G], ...]
+        base_classes = [tgt["base_sim_classes"] for tgt in targets] # [[N], [G], ...]
 
         ### Calculate remaining ###
         obj_encs_classes = [c[0] if len(c) > 0 else -1 for c in classes ] # [B]

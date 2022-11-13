@@ -107,7 +107,7 @@ class Config():
     ICBIN_TRAIN_PATH = "/home/jure/datasets/icbin/train"
     ICBIN_VAL_PATH = "/home/jure/datasets/icbin/val"
     
-    TRAIN_DATASETS = [TLESS_PATH, YCBV_PATH, AVD_PATH, ICBIN_TRAIN_PATH, ICBIN_VAL_PATH]
+    TRAIN_DATASETS = [GMU_PATH] #TLESS_PATH, YCBV_PATH, , ICBIN_TRAIN_PATH, ICBIN_VAL_PATH
     TEST_DATASETS = [GMU_PATH]
 
     def __init__(self, load_path = None, save_path = None):

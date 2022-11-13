@@ -116,10 +116,12 @@ class MIXLoader():
         return int_to_supint
 
     def _load_dataset(self, ds_root_path):
-         # Load Dataset
-         # Get all files that end with coco_gt.json
-        path = glob.glob(os.path.join(ds_root_path, "*coco_gt.json"))
-        assert len(path) == 1, f"Found {len(path)} coco_gt.json files in {ds_root_path}."
+        # Load Dataset
+        # Get all files that end with coco_gt.json
+        if self.split == "train":
+            path = glob.glob(os.path.join(ds_root_path, "*train_coco_gt.json"))
+        if self.split == "val":
+            path = glob.glob(os.path.join(ds_root_path, "*val_coco_gt.json"))
         
         with open(path[0], "r") as f:
             ds_ann = json.load(f)
@@ -159,7 +161,7 @@ class MIXLoader():
         categories = self.categories[ds_idx]
         sup_cat = []
         for cl in classes:
-            super_cat = [cat["supercategory"] for cat in categories if cat["id"] == cl.item()][0]  
+            super_cat = [cat["supercategory"] for cat in categories if cat["id"] == cl][0]  
             sup_cat.append(super_cat)
         sim_classes = [self.sup_to_int[cl] for cl in sup_cat]
 
@@ -268,6 +270,7 @@ class MIXLoader():
         
         labels = torch.where(classes == selected_class, torch.ones_like(classes), torch.zeros_like(classes))
         sim_labels = torch.where(sim_classes == selected_sim_class, torch.ones_like(classes), torch.zeros_like(classes))
+
         
         # Get all labels of the same class
         tgt_target.update(**{"labels": labels, "sim_labels" : sim_labels})

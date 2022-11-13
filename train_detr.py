@@ -43,7 +43,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "vfn_deform_v1_finetune"
+        date = "debug"
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):

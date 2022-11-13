@@ -111,7 +111,8 @@ def display_data(data, save_name="dataset_visualize"):
         # Plot bounding boxes
         bboxs = targets[B_i]["boxes"]
         lbls = targets[B_i]["labels"]
-        iscrowd = targets[B_i]["iscrowd"]
+        sim_lbls = targets[B_i]["sim_labels"]
+        classes = targets[B_i]["classes"]
         size = targets[B_i]["size"]
         img_h, img_w = size[0], size[1]
 
@@ -121,12 +122,19 @@ def display_data(data, save_name="dataset_visualize"):
             x, y, w, h = int((cx-w/2)*img_w), int((cy-h/2) *
                                                   img_h), int(w*img_w), int(h*img_h)
 
-            #obj_id = lbls[i]
-            obj_id = iscrowd[i]
+
+            lbl = lbls[i]
+            sim_lbl = sim_lbls[i]
+            obj_id = classes[i]
+            if lbl == 1:
+                color = "green"
+            else:
+                color = "blue"
+
 
             ax.add_patch(plt.Rectangle((x, y), w, h, fill=False,
-                         edgecolor='red', linewidth=1, alpha=0.5))
-            ax.text(x, y, f"ID:{obj_id:.2f}", color='red', fontsize=5)
+                         edgecolor=color, linewidth=1, alpha=0.5))
+            ax.text(x, y, f"ID:{obj_id:.2f}", color=color, fontsize=5)
 
         for N_t_i in range(N_t):
             ax = axs[B_i, 1+N_t_i]

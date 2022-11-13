@@ -73,29 +73,39 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             assert isinstance(box, torch.Tensor)
             cx, cy, w, h = box.cpu().numpy()
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="green", linewidth=2))
-            obj_sim = targets[b]["sim_labels"][i].item()
-            ax.text(x, y+h*img_h, f"SIM:{obj_sim}", color="green", fontsize=4)
+            obj_lbl = targets[b]["labels"][i].item()
+            sim_lbl = targets[b]["sim_labels"][i].item()
+            if obj_lbl == 1:
+                color = "darkgreen"
+            else:
+                color = "blue"
+                
+            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=color, linewidth=2))
+            #ax.text(x, y+h*img_h, f"SIM:{obj_sim}", color=color, fontsize=4)
         
         # Plot Predicted Boxes
         if "pred_class_logits" in outputs and "pred_sim_logits" in outputs and "pred_boxes" in outputs:
             top_k = 5
             class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
-            sim_logits = outputs["pred_sim_logits"][b].sigmoid() # [Q, 1]
+            sim_logits = outputs["pred_sim_logits"][b].softmax(-1)  # [Q, 2]
             
             class_val, class_idx = class_logits[:, 1].topk(top_k) # [N]
-            sim_val = sim_logits[class_idx]  # [N]
+            sim_val, sim_idx = sim_logits[:, 1].topk(top_k) # [N]
+
             for i in range(top_k):
                 id = class_idx[i].item() # Idx of the prediction
                 c_vl = class_val[i].item() # Class score
                 s_vl = sim_val[i].item() # Sim score
                 obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
-                if obj_bg == 0:
+                if c_vl > 0.5:
+                    alpha = 1
+                    edgecolor = "red"
+                elif s_vl > 0.5:
+                    alpha = 1
+                    edgecolor = "yellow"
+                else:
                     edgecolor = "black"
                     alpha = 0.3
-                else:
-                    edgecolor = "red"
-                    alpha = 1
 
                 cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
 
