@@ -12,7 +12,7 @@ from data_generator.AVD import build_AVD_dataset, get_avd_data_generator
 from data_generator.GMU_kitchens import build_GMU_dataset, get_gmu_data_generator
 from data_generator.Objects365 import build_365_dataset, get_365_data_generator
 from data_generator.mixed_generator import get_concat_dataset
-from data_generator.mix_data_generator_v2 import build_MIX_dataset, get_mix_data_generator
+from data_generator.mix_data_generator import build_MIX_dataset, get_mix_data_generator
 from data_generator.transforms import DeNormalize
 from util.data_utils import display_data
 from configs.vision_focusnet_config import Config

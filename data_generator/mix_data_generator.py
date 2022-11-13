@@ -59,15 +59,15 @@ class MIXLoader():
         
         self.images = []
         self.annotations = []
-        self.targets = []
+        self.categories = []
         self.img_to_ann = []
 
         for ds_root_path in root_dirs:
-            images, annotations, targets, img_to_ann = self._load_dataset(ds_root_path)
+            images, annotations, categories, img_to_ann = self._load_dataset(ds_root_path)
 
             self.images.append(manager.list(images))
             self.annotations.append(manager.list(annotations))
-            self.targets.append(manager.list(targets))
+            self.categories.append(manager.list(categories))
             self.img_to_ann.append(manager.dict(img_to_ann))
             
 
@@ -79,7 +79,7 @@ class MIXLoader():
     def _category_to_int(self, offset = 0):
         if self.split == "train":
             mc_all = []
-            for t_a in self.targets:
+            for t_a in self.categories:
                 category = [it["name"] for it in t_a]
                 mc_all.extend(category)
 
@@ -87,14 +87,14 @@ class MIXLoader():
             cat_to_int = {mc: i+offset for i, mc in enumerate(category)}
         else:
             cat_to_int = {}
-            for it in self.targets[0]:
+            for it in self.categories[0]:
                 cat_to_int[it["name"]] = it["id"]
             
         return cat_to_int
     
     def _supercategory_to_int(self, offset = 0):
         mc_all = []
-        for t_a in self.targets:
+        for t_a in self.categories:
             supercategory = [it["supercategory"] for it in t_a]
             mc_all.extend(supercategory)
 
@@ -104,7 +104,7 @@ class MIXLoader():
 
     def _int_to_supint(self, offset = 0):
         mc_all = []
-        for t_a in self.targets:
+        for t_a in self.categories:
             name_sup = [(it["name"], it["supercategory"]) for it in t_a]
             mc_all.extend(name_sup)
 
@@ -155,6 +155,15 @@ class MIXLoader():
         
         target["boxes"] = boxes
         target["classes"] = classes
+        
+        categories = self.categories[ds_idx]
+        sup_cat = []
+        for cl in classes:
+            super_cat = [cat["supercategory"] for cat in categories if cat["id"] == cl.item()][0]  
+            sup_cat.append(super_cat)
+        sim_classes = [self.sup_to_int[cl] for cl in sup_cat]
+
+        target["sim_classes"] = sim_classes
         target["image_id"] = img_ann["id"]
         target["size"] = torch.as_tensor([img_ann["height"], img_ann["width"]])
         target["orig_size"] = torch.as_tensor([img_ann["height"], img_ann["width"]])
@@ -219,14 +228,14 @@ class MIXLoader():
         ### Transform base target and target classes
         new_classes = []
         for cl in tgt_target["classes"]:
-            cl_name = [it["name"] for it in self.targets[ds_idx] if it["id"] == cl.item()][0]
+            cl_name = [it["name"] for it in self.categories[ds_idx] if it["id"] == cl.item()][0]
             new_cl = self.cat_to_int[cl_name]
             new_classes.append(new_cl)
         tgt_target["classes"] = torch.as_tensor(new_classes)
             
         new_classes = []
         for cl in base_target["classes"]:
-            cl_name = [it["name"] for it in self.targets[ds_idx] if it["id"] == cl.item()][0]
+            cl_name = [it["name"] for it in self.categories[ds_idx] if it["id"] == cl.item()][0]
             new_cl = self.cat_to_int[cl_name]
             new_classes.append(new_cl)
         base_target["classes"] = torch.as_tensor(new_classes)
@@ -247,28 +256,22 @@ class MIXLoader():
         tgt_target.filter(keep_idx)
         
         classes = tgt_target["classes"]
+        sim_classes = tgt_target["sim_classes"]
         
-        targets = self.targets[ds_idx]
-        sup_cat = []
-        for cl in classes:
-            super_cat = [cat["supercategory"] for cat in targets if cat["id"] == cl.item()][0]  
-            sup_cat.append(super_cat)
-        macro_classes = [self.sup_to_int[cl] for cl in sup_cat]
-        macro_classes = torch.tensor(macro_classes, dtype=torch.long)
-      
         if len(classes) > 0:
             random_idx = random.sample(range(len(classes)), 1)[0]
         else:
             return img, [], tgt_target
 
         selected_class = classes[random_idx]
-        selected_macro_class = macro_classes[random_idx]
-        same_macro_class = torch.where(classes == selected_class)[0]
+        selected_sim_class = sim_classes[random_idx]
+        
+        labels = torch.where(classes == selected_class, torch.ones_like(classes), torch.zeros_like(classes))
+        sim_labels = torch.where(sim_classes == selected_sim_class, torch.ones_like(classes), torch.zeros_like(classes))
         
         # Get all labels of the same class
-        tgt_target.filter(same_macro_class) 
-        sim_labels = torch.where(tgt_target["classes"] == selected_class, torch.ones_like(tgt_target["classes"]), torch.zeros_like(tgt_target["classes"]))
-        tgt_target.update(**{"labels": torch.ones_like(tgt_target["classes"]), "sim_labels" : sim_labels})
+        tgt_target.update(**{"labels": labels, "sim_labels" : sim_labels})
+        tgt_target.filter(torch.where(sim_classes == selected_sim_class)[0])
         
         # Set similarity indices:
         tgt_imgs = self._get_tgt_img(selected_class, ds_idx)

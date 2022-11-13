@@ -397,7 +397,7 @@ class DnLoss(nn.Module):
     
     def tgt_loss_sim(self, out_sim, tgt_sim, num_tgt):
         """
-        out_sim: [N, 1]
+        out_sim: [N, 2]
         tgt_lbl: [N]
         """
         if len(tgt_sim) == 0:
@@ -405,16 +405,13 @@ class DnLoss(nn.Module):
                 "tgt_loss_sim": torch.as_tensor(0.).to("cuda"),
                 "tgt_sim_acc": torch.as_tensor(0.).to("cuda"),
             }
-        bs = out_sim.shape[0]
-        loss_ce = focal_loss(out_sim.view(-1, 1), tgt_sim.view(-1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
-        loss_ce = loss_ce.sum() / self.bs # / num_tgt
+            
+        loss_ce = focal_loss(out_sim.view(1, -1, 2), tgt_sim.view(1, -1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
+        loss_ce = loss_ce.sum() / num_tgt
 
         losses = {"tgt_loss_sim": loss_ce}
-        sim_pos = torch.where(out_sim.view(-1) > 0.5, torch.ones_like(out_sim.view(-1)), torch.zeros_like(out_sim.view(-1)))
-        acc = torch.sum(sim_pos == tgt_sim.view(-1)) / self.bs
-        acc = acc.detach()
-        losses["tgt_sim_acc"] = acc
-
+        losses['tgt_sim_acc'] = accuracy(out_sim, tgt_sim)[0]
+    
         return losses
     
     def tgt_loss_boxes(self, src_boxes, tgt_boxes, box_lbl, num_tgt,):

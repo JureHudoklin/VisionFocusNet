@@ -76,7 +76,7 @@ class DETR(nn.Module):
         ### Various embedding networks ###
         self.class_embed_pre = nn.Linear(self.d_model, 1)
         self.class_embed = nn.Linear(self.d_model, 2)
-        self.sim_embed = nn.Linear(self.d_model, 1)
+        self.sim_embed = nn.Linear(self.d_model, 2)
         self.refpoint_embed = nn.Embedding(num_queries, 4)
         if self.two_stage:
             self.refpoint_embed.requires_grad = False
@@ -91,7 +91,7 @@ class DETR(nn.Module):
         bias_value = math.log((1 - prior_prob) / prior_prob)
         
         self.class_embed.bias.data = torch.tensor([0.01, 0.99])
-        self.sim_embed.bias.data = torch.tensor([bias_value])
+        self.sim_embed.bias.data = torch.tensor([0.01, 0.99])
         
      
 
@@ -215,7 +215,7 @@ class DETR(nn.Module):
         
         #outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
         outputs_class = self.class_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
-        output_sim = self.sim_embed(rois-obj_enc_tgt) # [num_layers, bs, num_queries, 1]
+        output_sim = self.sim_embed(ca-obj_enc_tgt) # [num_layers, bs, num_queries, 2]
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
         
         # DB post processing
@@ -306,7 +306,6 @@ class SetCriterion(nn.Module):
         target_classes[idx] = target_classes_o # [bs, q]
         
 
-        #loss_ce = self.class_loss(outputs_logits, target_classes) # scalar
         loss_ce = focal_loss(outputs_logits, target_classes, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
         loss_ce = loss_ce.view(bs, q, -1) # [bs, q, 2]
         loss_ce = (loss_ce.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
@@ -315,12 +314,10 @@ class SetCriterion(nn.Module):
         losses = {"loss_ce": loss_ce}
         stats = {}
         if log:
-            stats = {"loss_ce": loss_ce}
+            stats = {"loss_ce": loss_ce.detach()}
             predicted_bg = (outputs_logits.argmax(-1) == 0).sum()
             predicted_obj = (outputs_logits.argmax(-1) == 1).sum()
-            if predicted_bg == 0 and predicted_obj == 0:
-                print(outputs_logits.argmax(-1))
-                exit()
+
             acc = accuracy(outputs_logits[idx], target_classes_o)[0]
             stats = {"class_acc": acc}
             stats.update({"predicted_bg": predicted_bg, "predicted_obj": predicted_obj})
@@ -334,7 +331,7 @@ class SetCriterion(nn.Module):
         Arguments:
         ----------
         outputs : dict
-            - "pred_logits" : Tensor [bs, q , num_classes]
+            - "pred_sim_logits" : Tensor [bs, q , 2]
         targets : list[dict]
             - "labels" : Tensor [bs, q]
         indices : list of tuples -- len(indices) = bs
@@ -351,21 +348,23 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
         target_classes[idx] = target_classes_o # [bs, q]
         
-        #loss_sim = self.sim_loss(outputs_logits[idx], target_classes_o) # scalar
-       # print(outputs_logits[idx].shape, target_classes_o.shape)
-        loss_sim = focal_loss(outputs_logits[idx], target_classes_o, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
-        #print(loss_sim.shape)
-        loss_sim = loss_sim.sum() / bs # / num_boxes #(loss_sim.mean(1).sum() / num_boxes) *num_boxes
-        # loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
-        # loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
-        # loss_sim = (loss_sim / num_boxes)* outputs_logits.shape[1]
-        #loss_sim = simple_focal_loss(outputs_logits, target_classes, num_boxes, alpha=self.focal_alpha)
-        losses = {"loss_sim": loss_sim}
-        stats = {"loss_sim": loss_sim}
+        loss_sim = focal_loss(outputs_logits target_classes, alpha=self.focal_alpha, gamma=2.0, reduction="none") # [bs, q]
+        loss_sim = loss_sim.view(bs, q, -1) # [bs, q, 2]
+        loss_sim = (loss_sim.mean(1).sum() / num_boxes) * outputs_logits.shape[1]
         
+        losses = {"loss_sim": loss_sim}
+        stats = {}
+        if log:
+            stats = {"loss_sim": loss_sim.detach()}
+            predicted_bg = (outputs_logits.argmax(-1) == 0).sum()
+            predicted_obj = (outputs_logits.argmax(-1) == 1).sum()
+
+            acc = accuracy(outputs_logits[idx], target_classes_o)[0]
+            stats = {"similarity_acc": acc}
+            stats.update({"sim_bg": predicted_bg, "sim_obj": predicted_obj})
+            stats.update(losses)
         return losses, stats
-
-
+        
     @torch.no_grad()
     def loss_cardinality(self, outputs, targets, indices, num_boxes, log=True):
         """ 
@@ -425,29 +424,6 @@ class SetCriterion(nn.Module):
         
         return losses, stats
 
-
-    def _get_src_permutation_idx(self, indices):
-        # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, b) for b, (src, _) in enumerate(indices)])
-        src_idx = torch.cat([src for (src, _) in indices])
-        return batch_idx, src_idx
-
-    def _get_tgt_permutation_idx(self, indices):
-        # permute targets following indices
-        batch_idx = torch.cat([torch.full_like(tgt, b) for b, (_, tgt) in enumerate(indices)])
-        tgt_idx = torch.cat([tgt for (_, tgt) in indices])
-        return batch_idx, tgt_idx
-
-    def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
-        loss_map = {
-            "labels": self.loss_labels,
-            "similarity": self.loss_similarity,
-            "cardinality": self.loss_cardinality,
-            "boxes": self.loss_boxes,
-        }
-        assert loss in loss_map, f"do you really want to compute {loss} loss?"
-        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
-    
     def loss_contrastive(self, outputs, targets):
         ### Extract outputs ###
         image_feat = outputs["features"] # list[B, C, H, W]
@@ -525,6 +501,28 @@ class SetCriterion(nn.Module):
         
         return loss, stats
 
+    def _get_src_permutation_idx(self, indices):
+        # permute predictions following indices
+        batch_idx = torch.cat([torch.full_like(src, b) for b, (src, _) in enumerate(indices)])
+        src_idx = torch.cat([src for (src, _) in indices])
+        return batch_idx, src_idx
+
+    def _get_tgt_permutation_idx(self, indices):
+        # permute targets following indices
+        batch_idx = torch.cat([torch.full_like(tgt, b) for b, (_, tgt) in enumerate(indices)])
+        tgt_idx = torch.cat([tgt for (_, tgt) in indices])
+        return batch_idx, tgt_idx
+
+    def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
+        loss_map = {
+            "labels": self.loss_labels,
+            "similarity": self.loss_similarity,
+            "cardinality": self.loss_cardinality,
+            "boxes": self.loss_boxes,
+        }
+        assert loss in loss_map, f"do you really want to compute {loss} loss?"
+        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
+ 
     def forward(self, outputs, targets):
         """ 
         This performs the loss computation.

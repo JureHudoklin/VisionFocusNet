@@ -194,8 +194,8 @@ class Target():
 
     def __init__(self, **kwargs):
         self.img_prop = ["size", "orig_size", "image_id", "scene", "valid_targets"]
-        self.tgt_prop = ["boxes", "labels", "classes", "macro_classes",
-                         "sim_labels", "iscrowd", "area"]
+        self.tgt_prop = ["boxes", "labels", "sim_labels", "classes", "sim_classes",
+                         "iscrowd", "area"]
 
         self.keys = self.img_prop + self.tgt_prop
 
@@ -284,8 +284,9 @@ class Target():
         self.target.update({key: val})
 
     def make_valid(self):
-        self.target["labels"] = self.target["labels"].long()
         self.target["classes"] = self.target["classes"].long()
+        self.target["sim_classes"] = self.target["sim_classes"].long()
+        self.target["labels"] = self.target["labels"].long()
         self.target["sim_labels"] = self.target["sim_labels"].long()
         self.target["iscrowd"] = self.target["iscrowd"].float()
         self.target["area"] = self.target["area"].float()
@@ -294,7 +295,6 @@ class Target():
         self.target["image_id"] = self.target["image_id"].long()
         self.target["boxes"] = self.target["boxes"].reshape(-1, 4).float()
         self.target["valid_targets"] = self.target["valid_targets"].bool()
-        self.target["macro_classes"] = self.target["macro_classes"].long()
 
     @property
     def is_valid(self):
