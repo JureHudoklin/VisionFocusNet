@@ -76,10 +76,8 @@ class Transformer(nn.Module):
 
         self.two_stage = two_stage
         if two_stage:
-            self.enc_output = nn.Linear(d_model, d_model)
-            self.enc_output_norm = nn.LayerNorm(d_model)
-            self.objectness_output_proposals = nn.Linear(d_model, 2)
             self.delta_bbox = nn.Linear(d_model, 4)
+            self.centerness = nn.Linear(d_model, 1)
 
         self.d_model = d_model
         self.nhead = nhead
@@ -98,36 +96,35 @@ class Transformer(nn.Module):
         nn.init.constant_(self.decoder.bbox_embed.layers[-1].bias.data, 0)
         
         
-    def gen_encoder_output_proposals(self, memory, memory_padding_mask):
-        """
-        memory : Tensor [HW, B, C]
-        memory_padding_mask : Tensor [B, HW]
-        spatial_shapes : tuple(H, W)
-        """
-        B, C, H, W = memory.shape
-        memory = memory.reshape(B, C, -1).permute(2, 0, 1) # [HW, B, C]
-        lvl = 0
-        
-        mask_flatten_ = memory_padding_mask.view(B, H, W, 1) # # B, H, W, 1
-        valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1) # True: valid, False: invalid N, H
-        valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1) # True: valid, False: invalid N, W
-        grid_y, grid_x = torch.meshgrid(torch.linspace(0, H - 1, H, dtype=torch.float32, device=memory.device),
-                                            torch.linspace(0, W - 1, W, dtype=torch.float32, device=memory.device)) # H, W
-        grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # H, W, 2
+    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
+        N_, S_, C_ = memory.shape
+        base_scale = 4.0
+        proposals = []
+        _cur = 0
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+            mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
+            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
+            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
 
-        scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(B, 1, 1, 2) # N, 1, 1, 2
-        grid = (grid.unsqueeze(0).expand(B, -1, -1, -1) + 0.5) / scale # N, H, W, 2
-        wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl) # N, H, W, 2
-        output_proposals = torch.cat((grid, wh), -1).view(B, -1, 4) # N, H*W, 4
-        
-        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True) # N, H*W, 1
+            grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
+                                            torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
+            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
+
+            scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
+            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
+            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
+            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+            proposals.append(proposal)
+            _cur += (H_ * W_)
+        output_proposals = torch.cat(proposals, 1)
+        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
         output_proposals = torch.log(output_proposals / (1 - output_proposals))
         output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
-        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf')) # N, H*W, 4
-     
+        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
+
         output_memory = memory
-        output_memory = output_memory.masked_fill(memory_padding_mask.permute(1, 0).unsqueeze(-1), float(0)) # HW, B, C
-        output_memory = output_memory.masked_fill(~output_proposals_valid.permute(1, 0, 2), float(0))
+        output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
+        output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
         output_memory = self.enc_output_norm(self.enc_output(output_memory))
         return output_memory, output_proposals
 
@@ -207,40 +204,30 @@ class Transformer(nn.Module):
                                 valid_ratios = valid_ratios,
                                 pos = pos_flat,
                                 src_key_padding_mask = mask_flat)
-
-        out_mem = []
-        out_prop = []  
-        out_obj = []     
+  
         topk = self.num_queries
         
         ### For each memory perform 1: Bounding Box Proposals, 2: Contrastive loss ###
         if self.two_stage:
-            for memory in memories:
-                output_memory, output_proposals = self.gen_encoder_output_proposals(memory, src_mask, (h, w)) # HW, B, C,-- B, HW, 4
-                output_proposals = output_proposals.permute(1, 0, 2) # HW, B, 4
-                output_memory = output_memory.permute(1, 0, 2) # HW, B, C
-                
-                # Get top proposals
-                output_memory_object = self.objectness_output_proposals(output_memory).softmax() # HW, B, 2
-                output_prop_topk, output_prop_topk_idx = output_memory_object[:, :, 1].topk(topk, dim=0) # topk, B
-                        
-                # Get top proposals topk, B, 4
-                output_proposals_filtered = torch.gather(output_proposals, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, 4))
-                output_memory_filtered = torch.gather(output_memory, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, output_memory.shape[-1])) # topk, B, C
-                output_obj_filtered = torch.gather(output_memory_object, 0, output_prop_topk_idx.unsqueeze(-1).expand(-1, -1, output_memory_object.shape[-1]))
-                
-                # Modify the proposals based on the features  topk, B, 4
-                output_proposals_filtered = output_proposals_filtered + self.delta_bbox(output_memory_filtered)
-                
-                out_mem.append(output_memory_filtered)
-                out_prop.append(output_proposals_filtered)
-                out_obj.append(output_obj_filtered)
-                
-            out_mem = torch.stack(output_memory_filtered, dim=0) # L, topk, B, C
-            out_prop = torch.stack(output_proposals_filtered, dim=0) # L, topk, B, 4
-            out_obj = torch.stack(output_obj_filtered, dim=0) # L, topk, B, 2
+            output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flat, feat_sizes)
+
+            # hack implementation for two-stage Deformable DETR
+            enc_outputs_centerness = self.centerness(output_memory) # (B, HW, 1)
+            enc_outputs_coord_unact = self.delta_bbox(output_memory) + output_proposals
+
+            topk = self.num_queries
+            topk_proposals = torch.topk(enc_outputs_centerness.flatten(1).detach(), topk, dim=1)[1]
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
             
-            tgt_point_embed[-topk:, :, :] = out_prop[-1] # topk, B, 4
+            tgt_point_embed[-topk:, :, :] = two_stage_proposals.detach()
+            
+            two_stage_proposals = topk_coords_unact.sigmoid()
+            two_stage_centerness = torch.gather(enc_outputs_centerness, 1, topk_proposals.unsqueeze(-1)) # (B, topk, 1)
+
+        else:
+            two_stage_proposals = None
+            two_stage_centerness = None
+            
 
         ###############
         ### Decoder ###
@@ -253,7 +240,7 @@ class Transformer(nn.Module):
         ca, se, references = self.decoder(tgt_label_embed, memory, tgts, memory_key_padding_mask=mem_key_padd_mask,
                           pos=pos, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
         
-        return ca, se, references, memories, out_prop, out_obj
+        return ca, se, references, memories, two_stage_proposals, two_stage_centerness
 
 
 class DeformableTransformerEncoderLayer(nn.Module):

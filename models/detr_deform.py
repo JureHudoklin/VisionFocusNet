@@ -24,7 +24,7 @@ from .layer_util import MLP, inverse_sigmoid, roi_align_on_feature_map
 from .feature_alignment import TemplateFeatAligner
 from loses.sigmoid_focal_loss import sigmoid_focal_loss, focal_loss, FocalLoss
 
-from loses.hungarian_matcher import build_matcher
+from loses.hungarian_matcher import build_matcher, build_two_stage_matcher
 
 
 
@@ -195,7 +195,7 @@ class DETR(nn.Module):
                            self.label_enc,
             )
             
-        ca, sa, reference_pts_layers, out_mem, out_prop, out_obj = self.transformer(src = feat_list,
+        ca, sa, reference_pts_layers, out_mem, out_prop, out_centerness = self.transformer(src = feat_list,
                                                     src_pos_embed = pos,
                                                     src_mask = mask_list,
                                                     tgt_point_embed = input_query_bbox,
@@ -230,8 +230,7 @@ class DETR(nn.Module):
 
         
         if self.two_stage:
-            out["obj_outputs"] = {"out_mem": out_mem[-1], "out_prop": out_prop[-1], "out_obj": out_obj[-1]}
-            out["obj_aux_outputs"] = [{"out_mem": out_mem[i], "out_prop": out_prop[i], "out_obj": out_obj[i]} for i in range(len(out_mem)-1)]
+            out["two_stage"] = {"ref_point_prop": out_prop, "centerness": out_centerness}
         
         if self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss(outputs_class, output_sim, outputs_coord)
@@ -254,7 +253,14 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, dn_weight_dict, dn_args, focal_alpha, batch_size, losses, train_method):
+    def __init__(self, num_classes,
+                 matcher, two_stage_matcher,
+                 weight_dict, dn_weight_dict,
+                 dn_args, 
+                 focal_alpha,
+                 batch_size, 
+                 losses,
+                 train_method):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -266,6 +272,7 @@ class SetCriterion(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.matcher = matcher
+        self.two_stage_matcher=two_stage_matcher,
         self.weight_dict = weight_dict
         self.dn_weight_dict = dn_weight_dict
         self.dn_args = dn_args
@@ -591,9 +598,41 @@ class SetCriterion(nn.Module):
             losses.update(dn_losses)
             
             
-        ################
-        ### OBJ LOSS ###
-        ################
+        ######################
+        ### Two STAGE LOSS ###
+        ######################
+        #if self.two_stage:
+        # --- BBOX ---
+        two_stage_outputs = outputs["two_stage"]
+        ref_point_proposals = outputs["two_stage"]["o"]
+        centerness = outputs["two_stage"]["c"]
+        indices = self.two_stage_matcher(two_stage_outputs, targets)
+        
+        two_stage_targets = sum(len(t["base_classes"]) for t in targets)
+        two_stage_targets = torch.as_tensor([two_stage_targets], dtype=torch.float, device = device)
+        two_stage_targets = torch.clamp(two_stage_targets, min=1).item()
+        
+        idx = self._get_src_permutation_idx(indices)
+        
+        src_boxes = outputs["ref_point_proposals"][idx] # [nb_target_boxes, 4]
+        target_boxes = torch.cat([t["base_boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0) # [nb_target_boxes, 4]
+
+        loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
+        loss_bbox = loss_bbox.sum() / two_stage_targets
+        
+        loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
+            box_ops.box_cxcywh_to_xyxy(src_boxes),
+            box_ops.box_cxcywh_to_xyxy(target_boxes)))
+        loss_giou = loss_giou.sum() / two_stage_targets
+        
+        target_centerness = src_boxes[:, :2] - target_boxes[:, :2] # [nb_target_boxes, 2]
+        target_centerness = torch.norm(target_centerness, dim=1).detach() # [nb_target_boxes]
+        src_centerness = centerness[idx] # [nb_target_boxes]
+        centerness_loss = (target_centerness-src_centerness).abs().sum() / two_stage_targets
+
+        losses.update("two_stage_loss_bbox", loss_bbox)
+        losses.update("two_stage_loss_giou", loss_giou)
+        losses.update("two_stage_loss_centerness", centerness_loss)
         
         return losses, stats
         
@@ -679,6 +718,10 @@ def build_model(args, device):
     matcher = build_matcher(args)
     weight_dict = {"loss_ce": args.CLASS_LOSS_COEF, "loss_sim" : args.SIM_LOSS_COEF, "loss_bbox": args.BBOX_LOSS_COEF, "loss_giou" : args.GIOU_LOSS_COEF}
     
+    two_stage_matcher = build_two_stage_matcher(args)
+    if args.TWO_STAGE:
+        weight_dict.update({"two_stage_loss_bbox": 1, "two_stage_loss_giou" : 1, "two_stage_loss_centerness" : 1})
+    
     if args.TRAIN_METHOD == "detection_only":
         weight_dict.update({"loss_contrastive": 0.0})
     else:
@@ -710,6 +753,7 @@ def build_model(args, device):
     
     criterion = SetCriterion(num_classes, 
                              matcher=matcher, 
+                             two_stage_matcher=two_stage_matcher,
                              weight_dict=weight_dict,
                              dn_weight_dict=dn_weight_dict,
                              dn_args = args.DN_ARGS,
