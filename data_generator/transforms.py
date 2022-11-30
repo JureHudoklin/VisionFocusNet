@@ -158,15 +158,18 @@ def pad(image, target, padding):
     assert isinstance(image, PIL.Image.Image)
     assert isinstance(target, Target) or target is None
     
-    # assumes that we only pad on the bottom right corners
-    padded_image = F.pad(image, (0, 0, padding[0], padding[1]))
+    padded_image = F.pad(image, padding)
     if target is None:
         return padded_image, target
     if len(target) == 0:
         return padded_image, target
     target = copy.deepcopy(target)
-    # should we do something wrt the original size?
-    target["size"] = torch.tensor(padded_image.size[::-1])
+
+    # Fix boxes
+    target["boxes"][:, 0::2] += padding[0]
+    target["boxes"][:, 1::2] += padding[1]
+    # Fix image size
+    target["size"] += torch.tensor([padding[1], padding[0]])
     
     return padded_image, target
 
@@ -412,13 +415,35 @@ class RandomPad(object):
         self.max_pad = max_pad
 
     def __call__(self, img, target):
-        pad_x = random.randint(0, self.max_pad)
-        pad_y = random.randint(0, self.max_pad)
+        if self.max_pad[0] < 1:
+            pad_x = random.randint(0, int(self.max_pad[0] * img.width))
+            pad_y = random.randint(0, int(self.max_pad[1] * img.height))
+        else:
+            pad_x = random.randint(0, self.max_pad[0])
+            pad_y = random.randint(0, self.max_pad[1])
+        
         return pad(img, target, (pad_x, pad_y))
     
     def __str__(self) -> str:
         return "RandomPad"
 
+class RandomPerspective(object):
+    """ Randomly distorts the shape of an image. """
+    def __init__(self, distortion_scale=0.5, p=0.5):
+        self.distort_limit = distortion_scale
+        self.p = p
+        self.transform = T.RandomPerspective(distortion_scale=distortion_scale, p=p)
+        print("WARNING: RandomPerspective does not work with targets")
+        
+    def __call__(self, img, target):
+        assert isinstance(img, PIL.Image.Image)
+        assert target is None
+        try:
+            img = self.transform(img)
+        except:
+            pass
+        return img, target
+        
 
 class RandomSelect(object):
     """
@@ -504,6 +529,45 @@ class RandomErasing(object):
     
     def __str__(self) -> str:
         return "RandomErasing"
+    
+    
+class FillBackground(object):
+    def __init__(self, type="random", color = (124, 116, 104), *args, **kwargs):
+        # Types: "random", "mean", "random_color", "random_solid_color"
+        self.types = ["mean", "random_solid_color", "solid_color"] #"random_color",
+        self.type = type
+        self.color = color
+
+    def __call__(self, img, target):
+        assert isinstance(img, PIL.Image.Image)
+        
+        if self.type == "random":
+            type = random.choice(self.types)
+        else:
+            type = self.type
+        
+        img = img.copy()
+        img = np.array(img)
+        mask = np.sum(img, axis=2) == 0
+        
+        if type == "random_solid_color":
+            color = np.random.randint(0, 255, 3)
+            img[mask] = color
+        elif type == "random_color":
+            rand_img = np.random.randint(0, 255, img.shape)
+            img[mask] = rand_img[mask]
+        elif type == "solid_color":
+            solid_color = np.array(self.color)
+            img[mask] = solid_color
+        elif type == "mean":
+            mean = np.mean(img, axis=(0, 1))
+            img[mask] = mean
+            
+        img = PIL.Image.fromarray(img)
+        return img, target
+            
+    def __str__(self) -> str:
+        return "Fill Background"
 
 
 class Normalize(object):

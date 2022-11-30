@@ -1,10 +1,11 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+import random
 
 from models.layer_util import inverse_sigmoid
 from . import box_ops
-from .statistics import accuracy
+from .statistics import prec_acc_rec
 from loses.sigmoid_focal_loss import FocalLoss, sigmoid_focal_loss, focal_loss
 
 
@@ -214,9 +215,10 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
         
     ref_tgt = ref_tgt.permute(1, 0, 2) # [B, Q, C]
     
-    lab_dino = [torch.cat([t["labels"], torch.zeros_like(t["labels"])]) for t in targets] #
-    sim_dino = [torch.cat([t["sim_labels"], t["sim_labels"]]) for t in targets] #
-    box_dino = [torch.cat([t["boxes"], t["boxes"]]) for t in targets] #
+    lab_dino = [torch.cat([t["base_labels"], torch.zeros_like(t["base_labels"])]) for t in targets] #
+    sim_dino = [torch.cat([t["base_sim_labels"], torch.zeros_like(t["base_sim_labels"])]) for t in targets] #
+    matching_dino = [torch.cat([torch.ones_like(t["base_sim_labels"]), torch.zeros_like(t["base_sim_labels"])]) for t in targets]
+    box_dino = [torch.cat([t["base_boxes"], t["base_boxes"]]) for t in targets] #
   
     if training and dn_args["USE_DN"] and dn_args is not None:
         known = [(torch.ones_like(t)) for t in lab_dino] #[[L], ...]
@@ -225,6 +227,7 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
 
         sim_label = torch.cat([t for t in sim_dino]) # [N]
         class_label = torch.cat([t for t in lab_dino]) # [N]
+        matching_label = torch.cat([t for t in matching_dino]) # [N]
         boxes = torch.cat([t for t in box_dino]) # [N, 4]
         batch_idx = torch.cat([torch.full_like(t.long(), i) for i, t in enumerate(lab_dino)])  # [N] (0,0,0,1,1,...)
 
@@ -235,6 +238,7 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
         known_indice = known_indice.repeat(scalar, 1).view(-1)
         known_class_labels = class_label.repeat(scalar, 1).view(-1)
         known_sim_labels = sim_label.repeat(scalar, 1).view(-1)
+        known_matching_labels = matching_label.repeat(scalar, 1).view(-1)
         known_bid = batch_idx.repeat(scalar, 1).view(-1)
         known_bboxs = boxes.repeat(scalar, 1)
         
@@ -249,14 +253,15 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
         #     known_labels_noised.scatter_(0, chosen_indice, new_label) #
         # noise on the box: noise both x,y and w,h of the box
         if box_noise_scale > 0:
+            box_noise_scale_ = random.uniform(0, box_noise_scale)
             diff = torch.zeros_like(known_bbox_noised) # [N*scalar, 4]
             diff[:, :2] = known_bbox_noised[:, 2:] / 2 # w/2, h/2
             diff[:, 2:] = known_bbox_noised[:, 2:] # w, h 
             # diff = [w/2, h/2, w, h]
             bbox_factor_small = torch.rand_like(known_bbox_noised) * 2 - 1.0 # [-1, 1]
             bbox_factor_large = (torch.rand_like(known_bbox_noised)+1) * torch.where(torch.randint_like(known_bbox_noised, 0, 2) == 0, 1, -1) # [-2, -1] or [1, 2]
-            bbox_factor = torch.where(known_class_labels.view(-1, 1) == 1, bbox_factor_small, bbox_factor_large) # [N*scalar, 4]
-            known_bbox_noised += torch.mul(bbox_factor, diff).cuda() * box_noise_scale # [cx, cy, w, h] + [-w/2, -h/2, w, h] * box_noise_scale * [-1, 1]
+            bbox_factor = torch.where(known_matching_labels.view(-1, 1) == 1, bbox_factor_small, bbox_factor_large) # [N*scalar, 4]
+            known_bbox_noised += torch.mul(bbox_factor, diff).cuda() * box_noise_scale_ # [cx, cy, w, h] + [-w/2, -h/2, w, h] * box_noise_scale * [-1, 1]
             known_bbox_noised = known_bbox_noised.clamp(min=0.0, max=1.0)
 
         # Create embedding for known labels
@@ -315,7 +320,8 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
             'map_known_indice': torch.as_tensor(map_known_indice).long(), # [N*scalar] (1,2,3,4, ... N*scalar)
             'known_lbs_bboxes': (known_class_labels, known_sim_labels, known_bboxs), # ([N*scalar], [N*scalar, 4])
             'know_idx': know_idx, #[[L, 1], ...]
-            'pad_size': pad_size # N*scalar
+            'pad_size': pad_size, # N*scalar
+            'scalar': scalar,
         }
     else:  # no dn for inference
         input_query_label = ref_tgt
@@ -373,7 +379,7 @@ class DnLoss(nn.Module):
             output_known_class = output_known_class.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2) # [ls, N, 2]
             output_known_sim = output_known_sim.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2) # [ls, N, 1]
             output_known_coord = output_known_coord.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2) # [ls, N, 4]
-        num_tgt = known_indice.numel()//2
+        num_tgt = known_indice.numel()//2     #mask_dict['scalar']#      #known_indice.numel()//2 
         return known_class_labels, known_sim_labels, known_bboxs, output_known_class, output_known_sim, output_known_coord, num_tgt
                 
         
@@ -389,10 +395,14 @@ class DnLoss(nn.Module):
             }
 
         loss_ce = focal_loss(out_lbl.view(1, -1, 2), tgt_lbl.view(1, -1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
-        loss_ce = loss_ce.sum() / num_tgt
+        loss_ce = loss_ce.sum() / (tgt_lbl.sum()*2)#num_tgt     #  / num_tgt
 
         losses = {'tgt_loss_ce': loss_ce}
-        losses['tgt_class_acc'] = accuracy(out_lbl, tgt_lbl)[0]
+        
+        prec, acc, rec =  prec_acc_rec(out_lbl.softmax(dim=-1), tgt_lbl)
+        losses['tgt_class_acc'] = acc
+        losses['tgt_class_prec'] = prec
+        losses['tgt_class_rec'] = rec
         return losses
     
     def tgt_loss_sim(self, out_sim, tgt_sim, num_tgt):
@@ -407,10 +417,14 @@ class DnLoss(nn.Module):
             }
             
         loss_ce = focal_loss(out_sim.view(1, -1, 2), tgt_sim.view(1, -1), alpha=self.focal_alpha, gamma=2, reduction="none")# [bs, n]
-        loss_ce = loss_ce.sum() / num_tgt
+        loss_ce = loss_ce.sum() / (tgt_sim.sum()*2)#num_tgt    #  / num_tgt
 
         losses = {"tgt_loss_sim": loss_ce}
-        losses['tgt_sim_acc'] = accuracy(out_sim, tgt_sim)[0]
+        
+        prec, acc, rec = prec_acc_rec(out_sim, tgt_sim)
+        losses['tgt_sim_acc'] = acc
+        losses['tgt_sim_prec'] = prec
+        losses['tgt_sim_rec'] = rec
     
         return losses
     
@@ -430,7 +444,7 @@ class DnLoss(nn.Module):
         loss_bbox = torch.where(box_lbl.view(-1, 1) == 1, loss_bbox, torch.zeros_like(loss_bbox).to('cuda'))
 
         losses = {}
-        losses['tgt_loss_bbox'] = loss_bbox.sum() / num_tgt
+        losses['tgt_loss_bbox'] = loss_bbox.sum() / box_lbl.sum()   #(box_lbl.sum()*num_tgt)
 
         loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
             box_ops.box_cxcywh_to_xyxy(src_boxes),
@@ -438,7 +452,7 @@ class DnLoss(nn.Module):
         
         loss_giou = torch.where(box_lbl.view(-1) == 1, loss_giou, torch.zeros_like(loss_giou).to('cuda'))
         
-        losses['tgt_loss_giou'] = loss_giou.sum() / num_tgt
+        losses['tgt_loss_giou'] = loss_giou.sum() / box_lbl.sum()   #(box_lbl.sum()*num_tgt)
         return losses
 
     def forward(self, outputs_class, output_sim, outputs_coord, mask_dict, aux_num = None):

@@ -10,6 +10,10 @@ import matplotlib.pyplot as plt
 import torchvision
 import random
 import copy
+import skimage
+import pycocotools
+import PIL
+from shapely.geometry import Polygon, MultiPolygon
 
 import data_generator.transforms as T
 import data_generator.sltransforms as ST
@@ -49,6 +53,8 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         self.num_tgts = num_tgts
         self.area_limit = area_limit
         
+        self.torch_to_PIL = torchvision.transforms.ToPILImage()
+        
         self.exclude_classes = {}
         self.same_classes = {}
         
@@ -64,12 +70,15 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         
         ### Format Base Labels ###
         img, base_target = self.format_base_lbls(img, target)
+        
+        base_target.tgt_imgs = self.image_from_mask(img, base_target.masks)
+        
         base_target.make_valid()
         if self._base_transforms is not None:
             img, base_target = self._base_transforms(img, base_target)
             
         ### Format Target Labels ###  
-        img, tgt_imgs, tgt_target = self.format_tgt_lbls(img, base_target)
+        img, tgt_imgs, tgt_target, base_target = self.format_tgt_lbls(img, base_target)
         
         if tgt_imgs is None:
             tgt_img = torch.zeros(3, 224, 32)
@@ -100,6 +109,38 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         
         return img, tgt_imgs, target
         
+    def image_from_mask(self, image, masks):
+        # Image is a PIL image
+        # Masks is a list of polygons
+        # Returns a PIL image
+        image = np.array(image)
+        objs = []
+        
+        def bbox_from_rle(rle):
+            mask = pycocotools.mask.decode(rle)
+            bbox = pycocotools.mask.toBbox(rle)
+            return mask, bbox
+            
+        for rle in masks:
+            RLEs = pycocotools.mask.frPyObjects(rle, image.shape[0], image.shape[1])
+            RLE = pycocotools.mask.merge(RLEs)
+            # Minimum area rectangle
+            mask, bbox = bbox_from_rle(RLE)
+            x, y, w, h = bbox
+            x, y, w, h = int(x), int(y), int(w), int(h)
+            mask = mask[y:y+h, x:x+w]
+            
+            new_img = np.zeros((h, w, 3), dtype=np.uint8)
+            obj_img = image[y:y+h, x:x+w][mask == 1]
+            obj_img = np.clip(obj_img, 0, 254)
+            new_img[mask == 1] = obj_img
+            
+            objs.append(new_img)
+            
+        return objs
+            
+
+        
             
     def format_base_lbls(self, image, target):
         w, h = image.size
@@ -115,6 +156,7 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
 
         boxes = [obj["bbox"] for obj in anno]
+        masks = [obj["segmentation"] for obj in anno]
         # guard against no boxes via resizing
         # Box to (x1, y1, x2, y2)
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4) # [x, y, w, h]
@@ -129,11 +171,14 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
         boxes = boxes[keep]
         classes = classes[keep]
+        masks = [masks[i] for i in range(len(masks)) if keep[i]]
            
+        target_new.masks = masks
         target_new["boxes"] = boxes
         target_new["classes"] = classes
-        target_new["labels"] = torch.ones_like(classes)
-        target_new["sim_labels"] = torch.ones_like(classes)
+        target_new["sim_classes"] = classes
+        target_new["labels"] = torch.zeros_like(classes)
+        target_new["sim_labels"] = torch.zeros_like(classes)
         target_new.calc_area()
         target_new.calc_iscrowd()
         target_new["orig_size"] = torch.as_tensor([int(h), int(w)])
@@ -146,7 +191,7 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         assert isinstance(base_target, Target)
         target = copy.deepcopy(base_target)
         if len(target) == 0:
-            return image, None, target
+            return image, None, target, base_target
         
         classes = target["classes"]
 
@@ -173,35 +218,63 @@ class CocoLoader(torchvision.datasets.CocoDetection):
             else:
                 break
 
+        base_target["sim_labels"][same_class_idx] = 1
         target.filter(same_class_idx)
         if len(target) == 0:
-            return image, None, target
+            return image, None, target, base_target
         
         # Get all labels of the same class
-        target.update(**{"labels": torch.ones_like(target["labels"])})
-        _, min_crowd_idx = torch.min(target["iscrowd"], dim=0)
+        target.update(**{"sim_labels": torch.ones_like(target["sim_labels"])})
 
         # Set similarity indices:
-        if same_class_idx.shape[0] >= 3:
-            tgt_num = random.randint(1, 3)
-            min_crowd_idx = torch.topk(target["iscrowd"], tgt_num, largest=False)[1]
-        else:
-            tgt_num = 1
+        tgt_num = min(self.num_tgts, same_class_idx.shape[0])
+        min_crowd_idx = torch.topk(target["iscrowd"], tgt_num, largest=False)[1]
+        areas = target["area"][min_crowd_idx]
+        for i, area in enumerate(areas):
+            if area < 100:
+                # If area is too small, remove idx
+                min_crowd_idx[i] = -1
+                
+        min_crowd_idx = min_crowd_idx[min_crowd_idx != -1]
             
         similarity_idx = torch.zeros_like(target["labels"])
         similarity_idx[min_crowd_idx] = 1
         if class_id in self.same_classes:
             similarity_idx[:] = 1
-        target.update(**{"sim_labels" : similarity_idx})
+        target.update(**{"labels" : similarity_idx})
+        
+        temp_1 =  base_target["labels"][same_class_idx]
+        temp_1[min_crowd_idx] = 1 
+        base_target["labels"][same_class_idx] = temp_1
+        
        
         tgt_box = target["boxes"][min_crowd_idx] # # [N, 4] x1 y1 x2 y2
         tgt_box = tgt_box.reshape(-1, 4)
         
         
         target["valid_targets"][0:len(tgt_box)] = True
-        tgt_img = extract_tgt_img(image, tgt_box, num_tgts = self.num_tgts)
+
+
+        tgt_img = [base_target.tgt_imgs[i] for i in range(base_target["labels"].shape[0]) if base_target["labels"][i].item() == 1]
+        for i in range(len(tgt_img)):
+            img = PIL.Image.fromarray(tgt_img[i])
+            tgt_img[i] = img
+                        
+        if len(tgt_img) < self.num_tgts:
+            diff = self.num_tgts - len(tgt_img)
+            for i in range(diff):
+                tgt_img.append(tgt_img[i%len(tgt_img)])
+            
+                
+            # place_holder_img = self.torch_to_PIL(torch.zeros(3, 64, 64))
+            # for i in range(self.num_tgts - len(tgt_img)):
+            #     tgt_img.append(place_holder_img)
+            
+        #tgt_img = extract_tgt_img(image, tgt_box, num_tgts = self.num_tgts)
         
-        return image, tgt_img, target
+        #print(base_target["labels"])
+        
+        return image, tgt_img, target, base_target
 
 
 def build_dataset(image_set, args):

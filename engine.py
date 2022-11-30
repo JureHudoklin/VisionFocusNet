@@ -13,9 +13,12 @@ from util.statistics import StatsTracker
 from util.network_utils import display_model_outputs, write_summary, save_model
 from util.data_utils import make_dummy_input
 from data_generator.coco_eval import CocoEvaluator
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
 
-def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, save_dir, cfg, max_norm: float = 0.1):
+def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, save_dir, cfg,
+                    max_norm: float = 0.1,
+                    evaluate_fn = None,):
     model.train()
     criterion.train()
     stats_tracker = StatsTracker()
@@ -32,7 +35,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
             #dry_run(cfg, model, criterion, optimizer)
             print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
         else:            
-            stats_tracker.update(loss_dict, stats_dict)
+            #stats_tracker.update(loss_dict, stats_dict)
             
             # print statistics
             if batch % 10 == 0:
@@ -40,17 +43,39 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
                 ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
                 description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
                 print(description, )
+                
+                
+                              
+                
         
             if batch % 100 == 0:
                 stats = stats_tracker.get_stats_current()
                 merged = {**stats[0], **stats[1]}
                 step = batch+epoch*len(data_loader)
                 write_summary(writer, merged, step, f"running_stats")
-
+            
             if batch % 1000 == 0:
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+                fig.savefig(os.path.join(save_dir, f"{epoch}_{batch}.png"))
                 writer.add_figure("traing/img", fig, batch+epoch*total_batches)
                 plt.close(fig)
+                
+                # Display heatmaps
+                hm = stats_dict["heat_map"] # b, 1, h, w
+                hm = hm.repeat(1, 3, 1, 1) # b, 3, h, w
+                hm = hm*torch.tensor([250, 0, 0]).view(1, 3, 1, 1).to(hm.device)
+                hm_gt = stats_dict["heat_map_gt"] # b, 1, h, w
+                hm_gt = hm_gt.repeat(1, 3, 1, 1) # b, 3, h, w
+                hm_gt = hm_gt*torch.tensor([60, 60, 60]).view(1, 3, 1, 1).to(hm_gt.device)
+                hm_gt = hm_gt.float()
+                hm_sum = hm + hm_gt
+                step = batch+epoch*len(data_loader)
+                writer.add_images("heat_map", hm_sum, step, dataformats="NCHW")
+                
+                if evaluate_fn is not None:
+                    evaluate_fn(epoch = batch+epoch*len(data_loader))
+                    model.train()
+                    criterion.train()
                 
             if batch % 5000 == 0:
                 torch.cuda.empty_cache()
@@ -63,7 +88,8 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
                 write_summary(writer, merged, step, f"running_stats")
                 
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                writer.add_figure("traing/img", fig, batch+epoch*total_batches)
+                fig.savefig(os.path.join(save_dir, f"{epoch}_{batch}.png"))
+                #writer.add_figure("traing/img", fig, batch+epoch*total_batches)
                 plt.close(fig)
                     
         batch += 1
@@ -80,6 +106,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         loss_dict, stats_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
         dn_weight_dict = criterion.dn_weight_dict
+        
         loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
         loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
         
@@ -96,82 +123,96 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
         
-        loss_dict, stats_dict = {k: v.item() for k, v in loss_dict.items()}, {k: v.item() for k, v in stats_dict.items()}
         stats_tracker.update(loss_dict, stats_dict)
         
     return stats_tracker.get_stats_avg()
 
 
-def evaluate(model, criterion, postprocessor, data_loader, coco_gt, epoch, writer, save_dir, cfg):
+def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writer, save_dir, cfg):
     model.eval()
     criterion.eval()
-    stats_tracker = StatsTracker()
-    coco_evaluator = CocoEvaluator(coco_gt) #, tuple('bbox')
-    batch = 1
-    total_batches = len(data_loader)
-    start_time = time.time()
-    
-    with torch.no_grad():
-        for data in data_loader:
+    for i in range(len(data_loaders)):
+        coco_gt = coco_ds[i]
+        data_loader = data_loaders[i]
+        stats_tracker = StatsTracker()
+        coco_evaluator = CocoEvaluator(coco_gt) #, tuple('bbox')
+        #eval_test = MeanAveragePrecision(class_metrics=False, box_format="cxcywh")
+        batch = 1
+        total_batches = len(data_loader)
+        start_time = time.time()
         
-            samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
+        with torch.no_grad():
+            for data in data_loader:
             
-            ### BASIC EVAL ###
-            samples = samples.cuda(non_blocking=True)
-            tgt_imgs = tgt_imgs.cuda(non_blocking=True)
-            targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
-            
-            outputs = model(samples, tgt_imgs, targets)
-
-            ### CALCULATE LOSS ###
-            loss_dict, stats_dict = criterion(outputs, targets)
-            weight_dict = criterion.weight_dict
-            dn_weight_dict = criterion.dn_weight_dict
-            loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
-            loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
-            
-            losses = loss_matching + loss_dn
-            
-            loss_dict["loss"] = losses
-            loss_dict["loss_matching"] = loss_matching
-            loss_dict["loss_dn"] = loss_dn
-            stats_dict["loss"] = losses
-            
-            loss_dict, stats_dict = {k: v.item() for k, v in loss_dict.items()}, {k: v.item() for k, v in stats_dict.items()}
-            stats_tracker.update(loss_dict, stats_dict)
-            
-            
-            ### COCO EVAL ###
-            results = postprocessor(targets, outputs)
-            res = {target['image_id'].item(): output for target, output in zip(targets, results)}
-            coco_evaluator.update(res)
-            
-            # print statistics
-            if batch % 10 == 0:
-                ETA = (time.time() - start_time) * (total_batches-batch) / batch
-                ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
-                description = f"E: [EVAL:{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
-                print(description, )
-        
-            if batch % 100 == 0:
-                stats = stats_tracker.get_stats_current()
-                merged = {**stats[0], **stats[1]}
-                step = batch+epoch*len(data_loader)
-                write_summary(writer, merged, step, f"val_running_stats")
+                samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
                 
-            batch += 1
-            
-        if coco_evaluator is not None:
-            coco_evaluator.synchronize_between_processes()
-            coco_evaluator.accumulate()
-            coco_evaluator.summarize()
+                ### BASIC EVAL ###
+                samples = samples.cuda(non_blocking=True)
+                tgt_imgs = tgt_imgs.cuda(non_blocking=True)
+                targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
+                
+                outputs = model(samples, tgt_imgs, targets)
 
-        names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
-        coco_stats = coco_evaluator.coco_eval['bbox'].stats.tolist()
-        coco_dict = {name: coco_stats[i] for i, name in enumerate(names)}
-        
+                ### CALCULATE LOSS ###
+                loss_dict, stats_dict = criterion(outputs, targets)
+                weight_dict = criterion.weight_dict
+                dn_weight_dict = criterion.dn_weight_dict
+                loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+                loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
+                
+                losses = loss_matching + loss_dn
+                
+                loss_dict["loss"] = losses
+                loss_dict["loss_matching"] = loss_matching
+                loss_dict["loss_dn"] = loss_dn
+                stats_dict["loss"] = losses
+                
+                stats_tracker.update(loss_dict, stats_dict)
+                
+                
+                ### COCO EVAL ###
+                results, tgt_for = postprocessor(targets, outputs)
+                #print(tgt_for)
+                #eval_test.update(results, tgt_for)
+                res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+                coco_evaluator.update(res)
+                
+                # print statistics
+                if batch % 10 == 0:
+                    ETA = (time.time() - start_time) * (total_batches-batch) / batch
+                    ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
+                    description = f"E: [EVAL:{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
+                    print(description, )
             
-    return stats_tracker.get_stats_avg(), coco_dict
+                batch += 1
+              
+            
+              
+            fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+            #writer.add_figure("val/img", fig, batch+epoch*total_batches)
+            fig.savefig(os.path.join(save_dir, f"val_{i}_{epoch}_{batch}.png"))
+            plt.close(fig)
+                
+            if coco_evaluator is not None:
+                coco_evaluator.synchronize_between_processes()
+                coco_evaluator.accumulate()
+                coco_evaluator.summarize()
+
+            names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
+            coco_stats = coco_evaluator.coco_eval['bbox'].stats.tolist()
+            coco_dict = {name: coco_stats[i] for i, name in enumerate(names)}
+            
+            
+            #eval_test_res = eval_test.compute()
+            #print(eval_test_res)
+              
+            
+            stats = stats_tracker.get_stats_avg()
+            write_summary(writer, stats[0], epoch, f"val_{i}_loss")
+            write_summary(writer, stats[1], epoch, f"val_{i}_stats")
+            write_summary(writer, coco_dict, epoch, f"val_{i}")
+        
+    return stats, coco_dict
 
 def dry_run(cfg, model, criterion, optimizer):
     samples, tgt_imgs, targets = make_dummy_input(cfg.BATCH_SIZE, cfg.NUM_TGTS)

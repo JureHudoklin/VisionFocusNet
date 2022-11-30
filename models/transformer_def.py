@@ -75,9 +75,13 @@ class Transformer(nn.Module):
         self.n_levels = n_levels
 
         self.two_stage = two_stage
-        if two_stage:
-            self.delta_bbox = nn.Linear(d_model, 4)
-            self.centerness = nn.Linear(d_model, 1)
+        #if two_stage:
+        self.enc_output = nn.Linear(d_model, d_model)
+        self.enc_output_norm = nn.LayerNorm(d_model)
+        self.delta_bbox_xy = nn.Linear(d_model, 2)
+        self.centerness_embed = nn.Sequential(
+            nn.Linear(d_model, 1),
+        )
 
         self.d_model = d_model
         self.nhead = nhead
@@ -116,9 +120,9 @@ class Transformer(nn.Module):
             proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
             proposals.append(proposal)
             _cur += (H_ * W_)
-        output_proposals = torch.cat(proposals, 1)
+        output_proposals = torch.cat(proposals, 1) # N, S, 4
         output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
-        output_proposals = torch.log(output_proposals / (1 - output_proposals))
+        output_proposals =  torch.log(output_proposals / (1 - output_proposals)) 
         output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
         output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
 
@@ -203,31 +207,76 @@ class Transformer(nn.Module):
                                 level_start_index = level_start_index,
                                 valid_ratios = valid_ratios,
                                 pos = pos_flat,
-                                src_key_padding_mask = mask_flat)
+                                src_key_padding_mask = mask_flat) # [num_layers, B, HW, C]
   
         topk = self.num_queries
+        memory = memories[-1].clone()
+        
+        ################  
+        ### Heat Map ###
+        ################
+        num_layers, bs = memories.shape[:2]
+        h, w = feat_sizes[-1]
+        memories_hw = memories.reshape(num_layers, bs, h, w, -1)
+        memories_hw = self.enc_output_norm(self.enc_output(memories_hw))
+        heat_maps = self.centerness_embed(memories_hw) # [num_layers, B, H, W, 1] 
+
+        masks = ~src_mask[-1].view(1, bs, h, w).repeat(num_layers, 1, 1, 1) # [num_layers, B, H, W]
+
+        heat_maps = heat_maps.masked_fill(~masks.unsqueeze(-1), float(-1e8))
+
+        ### Select BBOX ###
+        bbox_wh = self.delta_bbox_xy(memories_hw) # [num_layers, B, H, W, 2]
+        valid_H = masks[:, :, :, 0].sum(-1) # [num_layers, B]
+        valid_W = masks[:, :, 0, :].sum(-1) # [num_layers, B]
+        
+        grid_y, grid_x = torch.meshgrid(torch.linspace(0, h - 1, h, dtype=torch.float32, device=memory.device),
+                                        torch.linspace(0, w - 1, w, dtype=torch.float32, device=memory.device))
+        centers = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # [H, W, 2]
+
+        scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1) # [num_layers, B, 2]
+        centers = centers.view(1, 1, h, w, 2).repeat(num_layers, bs, 1, 1, 1) # [num_layers, B, H, W, 2]
+        centers = (centers+0.5) / scale.view(num_layers, bs, 1, 1, 2) # [num_layers, B, H, W, 2]
+        centers = inverse_sigmoid(centers) # [num_layers, B, H, W, 2]
+        
+        bbox_proposals = torch.cat([centers, bbox_wh], -1) # [num_layers, B, H, W, 4]
+        #print(bbox_proposals[0, 0, 0, 0, :])
+        
+        top_k_heat, top_k_idx = torch.topk(heat_maps.view(num_layers, bs, -1), topk, dim=-1) # [num_layers, B, topk]
+        top_k_idx = top_k_idx.unsqueeze(-1).repeat(1, 1, 1, 4) # [num_layers, B, topk, 4]
+        top_k_bbox = torch.gather(bbox_proposals.view(num_layers, bs, -1, 4), 2, top_k_idx) # [num_layers, B, topk, 4] 
+        #print("heat", top_k_heat[0, 0, :10])
+        #print("bbox", top_k_bbox[0, 0, :10, :])
+        
+        #tgt_point_embed[-topk:, :, :] = top_k_bbox[-1].permute(1, 0, 2) # [B, topk, 4]
         
         ### For each memory perform 1: Bounding Box Proposals, 2: Contrastive loss ###
         if self.two_stage:
-            output_memory, output_proposals = self.gen_encoder_output_proposals(memory, mask_flat, feat_sizes)
+            #(grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
+            output_memory, output_proposals = self.gen_encoder_output_proposals(memories[-1].detach(), mask_flat, feat_sizes)
 
             # hack implementation for two-stage Deformable DETR
-            enc_outputs_centerness = self.centerness(output_memory) # (B, HW, 1)
+            enc_outputs_centerness = self.centerness(output_memory).sigmoid() # (B, HW, 1) #.detach()
             enc_outputs_coord_unact = self.delta_bbox(output_memory) + output_proposals
 
             topk = self.num_queries
-            topk_proposals = torch.topk(enc_outputs_centerness.flatten(1).detach(), topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_proposals = torch.topk(enc_outputs_centerness.sum(-1).flatten(1).detach(), topk, dim=1)[1]
             
-            tgt_point_embed[-topk:, :, :] = two_stage_proposals.detach()
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)) # (B, topk, 4)
+            topk_coords_prop = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_centerness = torch.gather(enc_outputs_centerness, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 2)) # (B, topk, 1)
             
-            two_stage_proposals = topk_coords_unact.sigmoid()
-            two_stage_centerness = torch.gather(enc_outputs_centerness, 1, topk_proposals.unsqueeze(-1)) # (B, topk, 1)
-
+            #tgt_point_embed[-topk:, :, :] = topk_coords_unact.detach().permute(1, 0, 2)
+            
+            two_stage_proposals = [output_proposals.sigmoid(), topk_coords_prop.sigmoid(), topk_coords_unact.sigmoid()]
+            two_stage_centerness = [enc_outputs_centerness, topk_centerness]
+            #enc_outputs_centerness#torch.gather(enc_outputs_centerness, 1, topk_proposals.unsqueeze(-1)) # (B, topk, 1)
         else:
             two_stage_proposals = None
             two_stage_centerness = None
-            
+           
+           
+        
 
         ###############
         ### Decoder ###
@@ -240,7 +289,7 @@ class Transformer(nn.Module):
         ca, se, references = self.decoder(tgt_label_embed, memory, tgts, memory_key_padding_mask=mem_key_padd_mask,
                           pos=pos, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
         
-        return ca, se, references, memories, two_stage_proposals, two_stage_centerness
+        return ca, se, references, memories, top_k_bbox, heat_maps
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
@@ -371,6 +420,8 @@ class DeformableTransformerEncoder(nn.Module):
             if self.norm is not None:
                 output = self.norm(output)
             intermediate.append(output)
+            
+        intermediate = torch.stack(intermediate, 0)
         return intermediate
 
 class TransformerDecoder(nn.Module):
@@ -426,7 +477,7 @@ class TransformerDecoder(nn.Module):
     def forward(self,
                 tgt, # [nq, bs, d_model]
                 memory, # [nf, bs, d_model]
-                tgt_encodings: Tensor, # [bs*num_tgts, d_model]
+                tgt_encodings: Tensor, # [bs, num_tgts, d_model]
                 tgt_mask: Optional[Tensor] = None, # [num_queries, num_queries]
                 memory_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None,
@@ -435,7 +486,8 @@ class TransformerDecoder(nn.Module):
                 reference_unsigmoid: Optional[Tensor] = None, #bs, query_dim, 4
                 ):
         
-        
+        tgt_encodings = F.max_pool1d(tgt_encodings.permute(0, 2, 1), tgt_encodings.shape[1]).squeeze(-1).unsqueeze(0) # [1, BS, C]
+        memory = memory-tgt_encodings # [nf, bs, d_model]
         
         out_cross_attn = tgt
         reference_points = reference_unsigmoid.sigmoid()
@@ -644,6 +696,7 @@ def build_transformer(args):
     return Transformer(
         d_model=args.D_MODEL,
         nhead = args.N_HEADS,
+        n_levels=args.NUM_LEVELS,
         num_queries=args.NUM_QUERIES,
         num_encoder_layers=args.NUM_ENCODER_LAYERS,
         num_decoder_layers=args.NUM_DECODER_LAYERS,

@@ -23,34 +23,23 @@ from util.network_utils import load_model, partial_load_model, save_model, write
 from configs.vision_focusnet_config import Config
 from models.detr_deform import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
-from data_generator.AVD import get_avd_data_generator, build_AVD_dataset
-from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_dataset
-from data_generator.Objects365 import get_365_data_generator
-from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
-from data_generator.mixed_generator import get_concat_dataset
-
 
 
 def main(args):
     print("\"화이팅\" 세현이 11.17.2022")
     # Set Device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cuda:0")
-   
-   
+
     # fix the seed for reproducibility
-    seed = 42
+    seed = 12
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    
-    info = "Evaluation on LMO and pretraining on COCO MIX. Detached similarity gradient. COntrastive loss on gradient both on class."
-    
+        
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "random_testing_9" #coco_cutout_difcrosscc_contrastive_highdnloss_cocomix_lmoval_fulltrain
-        save_dir = os.path.join("checkpoints", date)
+        save_dir = os.path.join("eval", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
             os.makedirs(log_save_dir)
@@ -68,30 +57,17 @@ def main(args):
         cfg = Config(save_path=save_dir)
         start_epoch = None
     
-    # Save Info
-    with open(os.path.join(save_dir, "info.txt"), "w") as f:
-        f.write(info)
 
     ######### BUILD MODEL #########
     model, criterion, postprocessor = build_model(cfg, device)
     model.to(device)
+    model.eval()
+    
+    optimizer = None
     
     # Summary
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_parameters = sum(p.numel() for p in model.parameters())
     print("number of params:", n_parameters)
-    # Set the optimizer
-    param_dicts = [
-        {"params": [p for n, p in model.named_parameters() if ("backbone" not in n) and ("template_encoder" not in n) and p.requires_grad]},
-        {
-            "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
-            "lr": cfg.LR_BACKBONE,
-        },
-    ]
-    param_dicts.append({"params": [p for n, p in model.named_parameters() if "template_encoder" in n and p.requires_grad],
-                        "lr": cfg.TEMPLATE_ENCODER["LR"]})
-    
-    optimizer = torch.optim.AdamW(param_dicts, lr=cfg.LR,
-                                  weight_decay=cfg.WEIGHT_DECAY)
     
     ######### LOAD MODEL IF PROVIDED #########
     last_epoch = -1

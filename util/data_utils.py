@@ -1,6 +1,3 @@
-from logging.config import valid_ident
-from re import S
-from tkinter import E
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
@@ -32,6 +29,12 @@ def make_base_transforms(image_set):
                     T.RandomResize(scales, max_size=1333),
                 ])
             ),
+            ST.RandomBlackAndWhite(prob = 0.1),
+            ST.RandomSelectMulti([
+                    ST.AdjustBrightness(0.7, 1.3),
+                    ST.AdjustContrast(0.7, 1.3),
+                    T.NoTransform(),
+                ]),
         ])
 
     if image_set == "val":
@@ -43,7 +46,10 @@ def make_tgt_transforms(image_set,
                         tgt_img_size=224,
                         tgt_img_max_size=448,
                         random_rotate = True,
-                        use_sl_transforms = True):
+                        use_sl_transforms = True,
+                        random_perspective=True,
+                        random_pad=True,
+                        augmnet_bg="random"):
     if image_set == "train":
         tfs = []
         if random_rotate:
@@ -52,20 +58,38 @@ def make_tgt_transforms(image_set,
                     T.RandomRotate(),
                     T.NoTransform(),
                 ))
+        if random_perspective:
+            tfs.append(T.RandomPerspective())
+        if random_pad:
+            tfs.append(T.RandomPad((0.3, 0.3)))
+        if type(augmnet_bg) == str:
+            tfs.append(T.FillBackground(augmnet_bg))
+        else:
+            tfs.append(T.FillBackground("solid_color", augmnet_bg))
         tfs.append(T.Resize(tgt_img_size, max_size=tgt_img_max_size))
         tfs.append(T.RandomHorizontalFlip())
         if use_sl_transforms:
             tfs.append(
                 ST.RandomSelectMulti([
-                    ST.AdjustBrightness(0.8, 1.2),
-                    ST.AdjustContrast(0.8, 1.2),
+                    ST.AdjustBrightness(0.7, 1.3),
+                    ST.AdjustContrast(0.7, 1.3),
                     T.NoTransform(),
                 ]),
             )
+        tfs.append(
+                ST.RandomSelectMulti([
+                    ST.LightingNoise(),
+                    T.NoTransform(),
+                ]),
+            )
+        
         return T.Compose(tfs)
     
     if image_set == "val":
-        return T.Resize(tgt_img_size, max_size=tgt_img_max_size)
+        tfs = []
+        tfs.append(T.FillBackground("random", (124, 116, 104)))
+        tfs.append(T.Resize(tgt_img_size, max_size=tgt_img_max_size))
+        return T.Compose(tfs)
 
     raise ValueError(f"unknown {image_set}")
 
@@ -87,6 +111,8 @@ def display_data(data, save_name="dataset_visualize"):
     samples, samples_tgt, targets = data.samples, data.tgt_imgs, data.targets
     imgs, masks = samples.decompose()
     imgs_tgt, _ = samples_tgt.decompose()
+    
+    print("imgs_tgt.shape", imgs_tgt.shape)
 
     B = imgs.shape[0]
     N_t = imgs_tgt.shape[0]//B
@@ -109,11 +135,12 @@ def display_data(data, save_name="dataset_visualize"):
         ax.imshow(img.permute(1, 2, 0))
 
         # Plot bounding boxes
-        bboxs = targets[B_i]["boxes"]
-        lbls = targets[B_i]["labels"]
-        sim_lbls = targets[B_i]["sim_labels"]
-        classes = targets[B_i]["classes"]
-        size = targets[B_i]["size"]
+        bboxs = targets[B_i]["base_boxes"]
+        lbls = targets[B_i]["base_labels"]
+        sim_lbls = targets[B_i]["base_sim_labels"]
+        classes = targets[B_i]["base_classes"]
+        sim_classes = targets[B_i]["base_sim_classes"]
+        size = targets[B_i]["base_size"]
         img_h, img_w = size[0], size[1]
 
         for i in range(len(bboxs)):
@@ -126,15 +153,21 @@ def display_data(data, save_name="dataset_visualize"):
             lbl = lbls[i]
             sim_lbl = sim_lbls[i]
             obj_id = classes[i]
+            sim_id = sim_classes[i]
             if lbl == 1:
                 color = "green"
-            else:
+                alpha = 1
+            elif sim_lbl == 1:
                 color = "blue"
+                alpha = 1
+            else:
+                color = "black"
+                alpha = 0.2
 
 
             ax.add_patch(plt.Rectangle((x, y), w, h, fill=False,
-                         edgecolor=color, linewidth=1, alpha=0.5))
-            ax.text(x, y, f"ID:{obj_id:.2f}", color=color, fontsize=5)
+                         edgecolor=color, linewidth=1, alpha=alpha))
+            ax.text(x, y, f"ID:{obj_id}, SID:{sim_id}", color=color, fontsize=5, alpha=alpha)
 
         for N_t_i in range(N_t):
             ax = axs[B_i, 1+N_t_i]

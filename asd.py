@@ -29,6 +29,8 @@ if __name__ == "__main__":
     random.seed(seed)
     
     cfg = Config()
+    cfg.NUM_WORKERS = 0
+    cfg.PIN_MEMORY = False
 
     # denorm = DeNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     
@@ -74,12 +76,23 @@ if __name__ == "__main__":
     if True:
         
         #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
-        train_data_loader, test_data_loader, _ = get_mix_data_generator(cfg)
-        test_it = iter(train_data_loader)
+        train_data_loader, test_data_loader = get_mix_data_generator(cfg)
+        test_it = iter(test_data_loader[0])
         i = 0
-        print(len(test_data_loader))
-        exit()
-        data = next(test_it)
+        print(len(test_data_loader[0]))
+
+        for i in range(2):
+            data = next(test_it)
+       
+        display_data(data, "test1")
+        
+        test_it = iter(test_data_loader[1])
+        i = 0
+        print(len(test_data_loader[1]))
+
+        for i in range(2):
+            data = next(test_it)
+       
         display_data(data, "test1")
         # data = next(test_it)
         # display_data(data, "test2")
@@ -91,20 +104,12 @@ if __name__ == "__main__":
         
     if False:
         
-        train_data_loader, test_data_loader = get_mix_data_generator(cfg)
+        train_data_loader, test_data_loader = get_concat_dataset(cfg)
         i = 0
         for i, data in enumerate(train_data_loader):
             if i%100 == 0:
                 print(f"{i}/{len(train_data_loader)}")
-            if i > 498:
-                print("START")
-                print(data.samples.shape)
-                print(data.tgt_imgs.shape)
-                display_data(data)
-                print("END")
-            #_, _, targets = data
-            
-        display_data(data)
+
         
     # Test position encoding
     if False:

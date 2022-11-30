@@ -60,12 +60,16 @@ class StatsTracker():
   
     def _update_stats(self, new_values, tracked_values):
         for k, v in new_values.items():
+            if isinstance(v, torch.Tensor):
+                # Check that the tensor is 1d
+                if v.dim() <= 1:
+                    v = v.item()
+                else:
+                    continue
             if k not in tracked_values:
                 tracked_values[k] = ValueStats()
-            if isinstance(v, torch.Tensor):
-                tracked_values[k].update(v.item())
-            else:
-                tracked_values[k].update(v)
+
+            tracked_values[k].update(v)
             
         return tracked_values
     
@@ -102,7 +106,7 @@ class StatsTracker():
     
 
 @torch.no_grad()
-def accuracy(output, target, topk=(1,)):
+def prec_acc_rec(output, target, topk=(1,)):
     """
     Computes the accuracy@k for the specified values of k
     
@@ -117,14 +121,29 @@ def accuracy(output, target, topk=(1,)):
     
     maxk = max(topk)
     batch_size = target.size(0)
+    output = output.view(-1, 2)
+    target = target.view(-1)
+    
+    output = output[:, 1]
+    output_pred = torch.where(output > 0.5, torch.ones_like(output), torch.zeros_like(output))
+    
+    true_pos = torch.sum(output_pred * target)
+    false_pos = torch.sum(output_pred * (1 - target))
+    true_neg = torch.sum((1 - output_pred) * (1 - target))
+    false_neg = torch.sum((1 - output_pred) * target)
+    prec = true_pos / (true_pos + false_pos)
+    prec = prec if not torch.isnan(prec) else torch.zeros_like(prec)
+    acc = (true_pos + true_neg) / (true_pos + true_neg + false_pos + false_neg)
+    rec = true_pos / (true_pos + false_neg)
+    #print(f"True Pos: {true_pos}, False Pos: {false_pos}, True Neg: {true_neg}, False Neg: {false_neg}", "Accuracy: ", acc, "Precision: ", prec)
 
-    _, pred = output.topk(maxk, dim = 1, largest=True, sorted=True) # [bs* q, 1]
-    pred = pred.t() # [1, bs* q]
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    # _, pred = output.topk(maxk, dim = -1, largest=True, sorted=True) # [bs* q, 1]
+    # pred = pred.t() # [1, bs* q]
+    # correct = pred.eq(target.view(1, -1).expand_as(pred))
 
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
+    # res = []
+    # for k in topk:
+    #     correct_k = correct[:k].view(-1).float().sum(0)
+    #     res.append(correct_k.mul_(100.0 / batch_size))
+    return prec*100, acc*100, rec*100
 

@@ -3,9 +3,9 @@ import numpy as np
 import bisect
 
 from util.misc import nested_tensor_from_tensor_list
-from data_generator.Objects365 import get_365_data_generator, build_365_dataset
-from data_generator.AVD import get_avd_data_generator, build_AVD_dataset
-from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_dataset
+from data_generator.coco import build_dataset
+from data_generator.mix_data_generator import build_MIX_dataset
+from util.data_utils import collate_wrapper, set_worker_sharing_strategy
 
 
 class ConcatDataset(Dataset):
@@ -28,36 +28,26 @@ class ConcatDataset(Dataset):
 
         return img, tgt_img, target
 
-def collate_fn( batch):
-        batch = list(zip(*batch))
-        batch[0] = nested_tensor_from_tensor_list(batch[0])
-        batch[1] = nested_tensor_from_tensor_list(batch[1])
-        return tuple(batch)    
-
 def get_concat_dataset(args):
-    dataset_avd_train = build_AVD_dataset(image_set='train', args=args)
-    dataset_gmu_train = build_GMU_dataset(image_set='train', args=args)
-    dataset_365_train = build_365_dataset(image_set='train', args=args)
+    coco_train = build_dataset("train", args)
+    mix_train = build_MIX_dataset("train", args.TRAIN_DATASETS, args)
     
-    dataset_avd_val = build_AVD_dataset(image_set='val', args=args)
-    dataset_gmu_val = build_GMU_dataset(image_set='val', args=args)
-    dataset_365_val = build_365_dataset(image_set='val', args=args)
-
-    dataset_train = ConcatDataset(dataset_avd_train, dataset_gmu_train, dataset_365_train)
-    dataset_val = ConcatDataset(dataset_avd_val, dataset_gmu_val, dataset_365_val)
-    
+    dataset_train = ConcatDataset(coco_train, mix_train)
     sampler_train = RandomSampler(dataset_train)
-    sampler_val = SequentialSampler(dataset_val)
 
-    # batch_sampler_train = BatchSampler(
-    #     sampler_train, args.BATCH_SIZE, drop_last=True)
-    batch_sampler_val = BatchSampler(
-        sampler_val, args.BATCH_SIZE, drop_last=True)
-
-    data_loader_train = DataLoader(dataset_train, args.BATCH_SIZE, sampler=sampler_train,
-                                   collate_fn=collate_fn, num_workers=args.NUM_WORKERS)
-    data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=batch_sampler_val,
-                                 drop_last=False, collate_fn=collate_fn, num_workers=args.NUM_WORKERS)
-
+    pin_memory = args.PIN_MEMORY
+    data_loader_train = DataLoader(dataset_train, args.BATCH_SIZE, sampler=sampler_train, pin_memory=pin_memory,
+                                   collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, worker_init_fn=set_worker_sharing_strategy)
     
-    return data_loader_train, data_loader_val
+    dl_val_list = []
+    for val_pth in args.TEST_DATASETS:
+        ds_val = build_MIX_dataset("val", [val_pth], args)
+        sampler_val = RandomSampler(ds_val)
+        
+        data_loader_val = DataLoader(ds_val, args.BATCH_SIZE, sampler=sampler_val,
+                                    drop_last=False, collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=pin_memory,
+                                    worker_init_fn=set_worker_sharing_strategy)
+        
+        dl_val_list.append(data_loader_val)
+    
+    return data_loader_train, dl_val_list

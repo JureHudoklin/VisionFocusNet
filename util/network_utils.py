@@ -36,13 +36,35 @@ def load_model(model, optimizer, load_dir, device, epoch=None):
             else:
                 ep_inter.append(ep)
         epoch = max(ep_num) if len(ep_num) > 0 else ep_inter[0]
+        
+        
     checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     epoch = checkpoint["epoch"]
     return model, optimizer, epoch
 
-
+def partial_load_model(model, optimizer, load_dir, device, epoch = None):
+    if epoch is None:
+        files = [f.split("_")[1].split(".")[0] for f in os.listdir(load_dir) if f.endswith(".pth")]
+        ep_num = []
+        ep_inter = []
+        for ep in files:
+            if ep.isdigit():
+                ep_num.append(int(ep))
+            else:
+                ep_inter.append(ep)
+        epoch = max(ep_num) if len(ep_num) > 0 else ep_inter[0]
+    checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
+    missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    
+    print(f"Missing keys: {missing_keys}")
+    print(f"Unexpected keys: {unexpected_keys}")
+    
+    epoch = checkpoint["epoch"]
+    return model, optimizer, epoch
+    
 
 @torch.no_grad()
 def display_model_outputs(outputs, samples, tgt_imgs, targets):
@@ -52,9 +74,9 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
     denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     denorm2 = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
-    fig, axs = plt.subplots(bs, 1+N_t, figsize=(6, 2*bs), dpi = 500)
+    fig, axs = plt.subplots(bs, 1+1, figsize=(3, 1.5*bs), dpi = 500)
     if bs == 1:
-        axs = axs.reshape(1, 1+N_t) 
+        axs = axs.reshape(1, 1+1) 
         
     tgt_imgs = tgt_imgs.reshape(bs, N_t, 3, tgt_imgs.shape[-2], tgt_imgs.shape[-1])
 
@@ -80,12 +102,12 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             else:
                 color = "blue"
                 
-            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=color, linewidth=2))
+            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=color, linewidth=0.5))
             #ax.text(x, y+h*img_h, f"SIM:{obj_sim}", color=color, fontsize=4)
         
         # Plot Predicted Boxes
         if "pred_class_logits" in outputs and "pred_sim_logits" in outputs and "pred_boxes" in outputs:
-            top_k = 5
+            top_k = 10
             class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
             sim_logits = outputs["pred_sim_logits"][b].softmax(-1)  # [Q, 2]
             
@@ -102,25 +124,25 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
                     edgecolor = "red"
                 elif s_vl > 0.5:
                     alpha = 1
-                    edgecolor = "yellow"
+                    edgecolor = "orange"
                 else:
                     edgecolor = "black"
-                    alpha = 0.3
+                    alpha = 0.1
 
                 cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
 
                 x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-                ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
-                ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=4, alpha = alpha)
+                ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=0.2, alpha = alpha))
+                ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=2, alpha = alpha)
                 
             
         ### Plot Target Objects ###
-        for j in range(N_t):
-            tgt_img = denorm2(tgt_imgs[b, j].contiguous())
-            tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
-            ax = axs[b, 1+j]
-            ax.imshow(tgt_img)
-            ax.axis("off")
+        #for j in range(N_t):
+        tgt_img = denorm2(tgt_imgs[b, 1].contiguous())
+        tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
+        ax = axs[b, 1]
+        ax.imshow(tgt_img)
+        ax.axis("off")
             
     fig.tight_layout()
     return fig    

@@ -6,6 +6,7 @@ Dataloader for AVD dataset.
 import os
 import sys
 import torch
+import time
 import matplotlib.pyplot as plt
 import torchvision
 import random
@@ -25,7 +26,7 @@ from util.misc import nested_tensor_from_tensor_list
 
 class MIXLoader():
     def __init__(self, 
-                root_dirs, 
+                ann_files, 
                 split,
                 valid_scenes = None,
                 valid_datasets = None,
@@ -36,15 +37,19 @@ class MIXLoader():
                 num_tgts = 3,
                 max_images_per_dataset = None,
                 min_box_area = 600,
+                sup_val = False,
                 ) -> None:
         
         manager = Manager()
         
-        self.root_dirs = root_dirs    
+        
+        self.ann_files = ann_files
+        self.root_dirs = [os.path.dirname(ann_file) for ann_file in ann_files]    
         self.split = split
         self.valid_scenes = valid_scenes
         self.valid_datasets = valid_datasets
         self.keep_noobj_images = keep_noobj_images
+        self.sup_val = sup_val
         
         self._inp_transforms = inp_transforms
         self._base_transforms = base_transforms
@@ -60,24 +65,45 @@ class MIXLoader():
         self.images = []
         self.annotations = []
         self.categories = []
+        
+        self.imgid_to_img = []
+        self.annid_to_ann = []
+        self.catid_to_cat = []
+        
         self.img_to_ann = []
 
-        for ds_root_path in root_dirs:
-            images, annotations, categories, img_to_ann = self._load_dataset(ds_root_path)
+        
+        
+        for ds_ann_path, ds_root_path in zip(self.ann_files, self.root_dirs):
+            start_time = time.time()
+            images, annotations, categories, img_to_ann = self._load_dataset(ds_ann_path)
 
-            self.images.append(manager.list(images))
-            self.annotations.append(manager.list(annotations))
-            self.categories.append(manager.list(categories))
-            self.img_to_ann.append(manager.dict(img_to_ann))
+            self.images.append(images)
+            self.annotations.append(annotations)
+            self.categories.append(categories)
+            self.img_to_ann.append(img_to_ann)
             
-
+            self.imgid_to_img.append({img["id"]: img for img in images})
+            self.annid_to_ann.append({ann["id"]: ann for ann in annotations})
+            self.catid_to_cat.append({cat["id"]: cat for cat in categories})
+            print("Finished loading dataset in {:.2f} seconds".format(time.time() - start_time))
+            
+        start_time = time.time()
         self.cat_to_int = self._category_to_int()
+        print("Finished converting categories to int in {:.2f} seconds".format(time.time() - start_time))
+        
+        start_time = time.time()
         self.sup_to_int = self._supercategory_to_int()
+        print("Finished converting supercategories to int in {:.2f} seconds".format(time.time() - start_time))
+        
+        start_time = time.time()
+        self.int_to_supint = self._int_to_supint(self.sup_to_int)
+        print("Finished converting int to superint in {:.2f} seconds".format(time.time() - start_time))
         
         self.fail_save = self.__getitem__(0)
 
-    def _category_to_int(self, offset = 0):
-        if self.split == "train":
+    def _category_to_int(self, offset = 90):
+        if len(self.root_dirs) > 1:
             mc_all = []
             for t_a in self.categories:
                 category = [it["name"] for it in t_a]
@@ -92,38 +118,37 @@ class MIXLoader():
             
         return cat_to_int
     
-    def _supercategory_to_int(self, offset = 0):
-        mc_all = []
-        for t_a in self.categories:
-            supercategory = [it["supercategory"] for it in t_a]
-            mc_all.extend(supercategory)
+    def _supercategory_to_int(self, offset = 90):
+        if len(self.root_dirs) > 1:
+            mc_all = []
+            for t_a in self.categories:
+                supercategory = [it["supercategory"] for it in t_a]
+                mc_all.extend(supercategory)
 
-        supercategory = sorted(list(set(mc_all)))
-        sup_to_int = {mc: i+offset for i, mc in enumerate(supercategory)}
-        return sup_to_int
+            supercategory = sorted(list(set(mc_all)))
+            sup_to_int = {mc: i+offset for i, mc in enumerate(supercategory)}
+            return sup_to_int
+        else:
+            sup_to_int = {}
+            for it in self.categories[0]:
+                sup_to_int[it["supercategory"]] = it["sup_id"]
+            return sup_to_int
 
-    def _int_to_supint(self, offset = 0):
+    def _int_to_supint(self, sup_to_int, offset = 90):
         mc_all = []
         for t_a in self.categories:
             name_sup = [(it["name"], it["supercategory"]) for it in t_a]
             mc_all.extend(name_sup)
 
-        supercategories = sorted(list(set([it[1] for it in mc_all])))
-        sup_to_int = {mc: i+offset for i, mc in enumerate(supercategories)}
-
-        int_to_supint = {self.cat_to_int[mc]: sup_to_int[sc] for mc, sc in mc_all}
+        int_to_supint = {self.cat_to_int[c]: sup_to_int[sc] for c, sc in mc_all}
         
         return int_to_supint
 
     def _load_dataset(self, ds_root_path):
         # Load Dataset
         # Get all files that end with coco_gt.json
-        if self.split == "train":
-            path = glob.glob(os.path.join(ds_root_path, "*train_coco_gt.json"))
-        if self.split == "val":
-            path = glob.glob(os.path.join(ds_root_path, "*val_coco_gt.json"))
         
-        with open(path[0], "r") as f:
+        with open(ds_root_path, "r") as f:
             ds_ann = json.load(f)
             
         if self.max_images_per_dataset is not None and len(ds_ann["images"]) > self.max_images_per_dataset:
@@ -135,9 +160,16 @@ class MIXLoader():
         
         img_to_ann = {img["id"]: [] for img in images}
         for ann in annotations:
+            ann_area = ann["area"]
+            if ann_area < self.min_box_area:
+                continue
             img_id = ann["image_id"]
             if img_id in img_to_ann:
                 img_to_ann[img_id].append(ann)
+                
+        # Filter out images without annotations
+        if not self.keep_noobj_images:
+            images = [img for img in images if len(img_to_ann[img["id"]]) > 0]
 
         return images, annotations, categories, img_to_ann
             
@@ -147,25 +179,21 @@ class MIXLoader():
         
         boxes = []
         classes = []
+        sim_classes = []
         for ann in annotations:
             ann = copy.deepcopy(ann)
             box = ann["bbox"]
             box[2], box[3] = box[0] + box[2], box[1] + box[3] # convert to xyxy
             boxes.append(box)
             classes.append(ann["category_id"])
+            sim_classes.append(ann["sup_id"])
             
         
         target["boxes"] = boxes
         target["classes"] = classes
-        
-        categories = self.categories[ds_idx]
-        sup_cat = []
-        for cl in classes:
-            super_cat = [cat["supercategory"] for cat in categories if cat["id"] == cl][0]  
-            sup_cat.append(super_cat)
-        sim_classes = [self.sup_to_int[cl] for cl in sup_cat]
-
         target["sim_classes"] = sim_classes
+        target["labels"] = torch.zeros_like(target["classes"])
+        target["sim_labels"] = torch.zeros_like(target["sim_classes"])
         target["image_id"] = img_ann["id"]
         target["size"] = torch.as_tensor([img_ann["height"], img_ann["width"]])
         target["orig_size"] = torch.as_tensor([img_ann["height"], img_ann["width"]])
@@ -228,19 +256,35 @@ class MIXLoader():
         img, base_target = self._inp_transforms(img, base_target)
         
         ### Transform base target and target classes
-        new_classes = []
-        for cl in tgt_target["classes"]:
-            cl_name = [it["name"] for it in self.categories[ds_idx] if it["id"] == cl.item()][0]
-            new_cl = self.cat_to_int[cl_name]
-            new_classes.append(new_cl)
-        tgt_target["classes"] = torch.as_tensor(new_classes)
-            
-        new_classes = []
-        for cl in base_target["classes"]:
-            cl_name = [it["name"] for it in self.categories[ds_idx] if it["id"] == cl.item()][0]
-            new_cl = self.cat_to_int[cl_name]
-            new_classes.append(new_cl)
-        base_target["classes"] = torch.as_tensor(new_classes)
+        if len(self.ann_files) > 1:
+            new_classes = []
+            new_sup_classes = []
+            temp_catid_to_cat = {it["id"]: it for it in self.categories[ds_idx]}
+            for cl in tgt_target["classes"]:
+                cat = temp_catid_to_cat[cl.item()]
+                cl_name = cat["name"]
+                sup_name = cat["supercategory"]
+                new_cl = self.cat_to_int[cl_name]
+                new_sup = self.sup_to_int[sup_name]
+                new_classes.append(new_cl)
+                new_sup_classes.append(new_sup)
+            new_classes = new_sup_classes if self.sup_val else new_classes
+            tgt_target["classes"] = torch.as_tensor(new_classes)
+            tgt_target["sim_classes"] = torch.as_tensor(new_sup_classes)
+                
+            new_classes = []
+            new_sup_classes = []
+            for cl in base_target["classes"]:
+                cat = temp_catid_to_cat[cl.item()]
+                cl_name = cat["name"]
+                sup_name = cat["supercategory"]
+                new_cl = self.cat_to_int[cl_name]
+                new_sup = self.sup_to_int[sup_name]
+                new_classes.append(new_cl)
+                new_sup_classes.append(new_sup)
+            new_classes = new_sup_classes if self.sup_val else new_classes
+            base_target["classes"] = torch.as_tensor(new_classes)
+            base_target["sim_classes"] = torch.as_tensor(new_sup_classes)
         
         ### Return the dictionary form of the target ###
         tgt_target = tgt_target.as_dict
@@ -248,14 +292,9 @@ class MIXLoader():
         target = {**base_target, **tgt_target}
         
         return img, tgt_imgs, target
-        
-       
+            
     def format_target_lbls(self, img, target, ds_idx):
         tgt_target = copy.deepcopy(target)
-        
-        areas = tgt_target["area"]
-        keep_idx = torch.where(areas > self.min_box_area)[0]
-        tgt_target.filter(keep_idx)
         
         classes = tgt_target["classes"]
         sim_classes = tgt_target["sim_classes"]
@@ -270,43 +309,44 @@ class MIXLoader():
         
         labels = torch.where(classes == selected_class, torch.ones_like(classes), torch.zeros_like(classes))
         sim_labels = torch.where(sim_classes == selected_sim_class, torch.ones_like(classes), torch.zeros_like(classes))
-
         
+        target["labels"] = labels
+        target["sim_labels"] = sim_labels
+
         # Get all labels of the same class
         tgt_target.update(**{"labels": labels, "sim_labels" : sim_labels})
         tgt_target.filter(torch.where(sim_classes == selected_sim_class)[0])
         
         # Set similarity indices:
-        tgt_imgs = self._get_tgt_img(selected_class, ds_idx)
+        catid_to_cat = self.catid_to_cat[ds_idx]
+        cat_name = catid_to_cat[selected_class.item()]["name"]
+        tgt_imgs = self._get_tgt_img(cat_name, ds_idx)
         tgt_target["valid_targets"][:len(tgt_imgs)] = True
         return img, tgt_imgs, tgt_target
         
-    def _get_tgt_img(self, obj_id, ds_idx):
-        obj_id = obj_id.item()
+    def _get_tgt_img(self, obj_name, ds_idx):
         root_dir = self.root_dirs[ds_idx]
-        target_img_path = os.path.join(root_dir, "templates")
-            
+        target_img_path = os.path.join(root_dir, "targets", obj_name)
+        
+        avilable_imgs = os.listdir(target_img_path)
+        
+        # Get random images
+        img_names = random.sample(avilable_imgs, min(self.num_tgts, len(avilable_imgs)))
         tgt_imgs = []
-        paths_all = []
-        for target_view in ["view_0", "view_1", "view_2"]:
-            pth = os.path.join(target_img_path, target_view, "images")
-            
-            files_target = glob.glob(os.path.join(pth, f"{obj_id:04d}" + "*"))
-            if len(files_target) == 0:
-                continue
-            
-            paths_all.extend(files_target)
-            file_path = random.choice(files_target)
-            paths_all.remove(file_path)
-            
-            with PIL.Image.open(file_path) as tgt_img:
+        for i, img_name in enumerate(img_names):
+            img_path = os.path.join(target_img_path, img_name)
+            with PIL.Image.open(img_path) as tgt_img:
                 tgt_img.load()
-            tgt_imgs.append(tgt_img)
-            
-        if len(tgt_imgs) < self.num_tgts and len(paths_all) > 0:
-            file_path = random.choice(paths_all)
-            with PIL.Image.open(file_path) as tgt_img:
-                tgt_img.load()
+            # If the image is RGBA convert it to RGB and fill the alpha channel black
+            if tgt_img.mode == "RGBA":
+                img_arr = np.array(tgt_img)
+                alpha = img_arr[:, :, 3]
+                fg = img_arr[:, :, :3]
+                mask = np.where(alpha <= 20) # h, w
+                fg[mask] = (0, 0, 0)
+                tgt_img = PIL.Image.fromarray(fg)
+                
+            tgt_img = tgt_img.convert("RGB")
             tgt_imgs.append(tgt_img)
             
         return tgt_imgs
@@ -317,15 +357,8 @@ def mix_to_coco(mix_info):
     coco_gt =  {"images" : [], "annotations" : [], "categories" : []}
     
     
-    
-    
-def build_MIX_dataset(image_set, args):
-    if image_set == "val":
-        root_paths = args.TEST_DATASETS
-    if image_set == "train":
-        root_paths = args.TRAIN_DATASETS
-        
-    for pth in root_paths:
+def build_MIX_dataset(image_set, ann_files, args):        
+    for pth in ann_files:
         assert os.path.exists(pth), f"Path {pth} to dataset does not exist"
     
     inp_transform = make_input_transform()
@@ -334,11 +367,14 @@ def build_MIX_dataset(image_set, args):
                                          tgt_img_size=args.TGT_IMG_SIZE, 
                                          tgt_img_max_size=args.TGT_MAX_IMG_SIZE, 
                                          random_rotate=False,
-                                         use_sl_transforms=True,)
+                                         use_sl_transforms=True,
+                                         random_perspective=True,
+                                         random_pad=True,
+                                         augmnet_bg="random") #(124, 116, 104)
     
     
     
-    dataset = MIXLoader(root_dirs=root_paths,
+    dataset = MIXLoader(ann_files=ann_files,
                         split=image_set,
                         valid_scenes= None,
                         valid_datasets= None,
@@ -346,30 +382,32 @@ def build_MIX_dataset(image_set, args):
                         tgt_transforms = tgt_transforms,
                         inp_transforms = inp_transform,
                         num_tgts=args.NUM_TGTS,
-                        max_images_per_dataset = 10000 if image_set == "train" else None,
-                        min_box_area= 300 if image_set == "train" else 100,
+                        max_images_per_dataset = None, #20000 if image_set == "train" else None,
+                        min_box_area= 2000 if image_set == "train" else 100,
                         )
     return dataset
 
 def get_mix_data_generator(args):
-    dataset_train = build_MIX_dataset(image_set='train', args=args)
-    dataset_val = build_MIX_dataset(image_set='val', args=args)
-    
-    
-   
-    sampler_train = torch.utils.data.RandomSampler(dataset_train)
-    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
     pin_memory = args.PIN_MEMORY
-
+    
+    ### TRAIN DATASETS ###
+    dataset_train = build_MIX_dataset(image_set='train', ann_files=args.TRAIN_DATASETS, args=args)
+    sampler_train = torch.utils.data.RandomSampler(dataset_train)
     batch_sampler_train = torch.utils.data.BatchSampler(
         sampler_train, args.BATCH_SIZE, drop_last=True)
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                    collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=pin_memory,
                                    worker_init_fn=set_worker_sharing_strategy)
-    data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
+
+    ### VAL DATASETS ###
+    validation_dl = []
+    for val_ds in args.TEST_DATASETS:
+        dataset_val = build_MIX_dataset(image_set='val', ann_files=[val_ds], args=args)
+        sampler_val = torch.utils.data.RandomSampler(dataset_val)
+        data_loader_val = DataLoader(dataset_val, args.BATCH_SIZE, sampler=sampler_val,
                                  drop_last=False, collate_fn=collate_wrapper, num_workers=args.NUM_WORKERS, pin_memory=pin_memory,
                                  worker_init_fn=set_worker_sharing_strategy)
+        validation_dl.append(data_loader_val)    
     
-    return data_loader_train, data_loader_val
+    return data_loader_train, validation_dl

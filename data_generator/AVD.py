@@ -3,7 +3,6 @@ Dataloader for AVD dataset.
 """
 
 import os
-from re import T
 import sys
 import torch
 import matplotlib.pyplot as plt

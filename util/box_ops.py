@@ -11,10 +11,15 @@ def box_cxcywh_to_xyxy(x):
     x_c, y_c, w, h = x.unbind(-1)
     b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
          (x_c + 0.5 * w), (y_c + 0.5 * h)]
-    # Make sure box is valid
+    b[0] = torch.clamp(b[0], min=0)
+    b[1] = torch.clamp(b[1], min=0)
+    b[2] = torch.clamp(b[2], max=1)
+    b[3] = torch.clamp(b[3], max=1)
     b = torch.stack(b, dim=-1)
-    b[:, 0::2].clamp_(min=0, max=1000000)
-    b[:, 1::2].clamp_(min=0, max=1000000)
+    
+    # Make sure box is valid
+    #b[:, 0::2] = b[:, 0::2].clamp(min=0, max=1)
+    #b[:, 1::2] = b[:, 1::2].clamp(min=0, max=1)
     return b
 
 
