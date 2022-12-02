@@ -5,7 +5,7 @@ import random
 import time
 import os
 import argparse
-
+import json
 
 import torch.nn as nn
 import torchvision
@@ -23,6 +23,7 @@ from util.network_utils import load_model, partial_load_model, save_model, write
 from configs.vision_focusnet_config import Config
 from models.detr_deform import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
+
 
 
 def main(args):
@@ -86,42 +87,44 @@ def main(args):
             start_epoch += 1
         print(f"Loaded model from {args.load_dir} at epoch {start_epoch}")
         
-    
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=last_epoch)
-    
+  
     # Set Logging
     writer = SummaryWriter(log_dir=log_save_dir)
 
 
     ######### GET DATASET #########
-    # COCO
-    #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
-    # 365
-    #train_data_loader, test_data_loader = get_365_data_generator(cfg)
- 
-    # MIX
-    train_data_loader, test_data_loaders = get_concat_dataset(cfg)
+    if args.data_dir is None:
+        # COCO
+        train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+    else:
+        img_dir = os.path.join(args.data_dir, "images")
+        tgt_dir = os.path.join(args.data_dir, "targets")
+        ann_gt_path = os.path.join(args.data_dir, "annotations.json")
+        if ann_gt_path is not None:
+            ann_gt = json.load(open(ann_gt_path, "r"))
+        else:
+            ann_gt = None
     
     # Get COCO GT for evaluation
-    val_base_dirs =cfg.TEST_DATASETS
-    coco_ds = []
-    for val_base_dir in val_base_dirs:
-        coco_ds.append(COCO(val_base_dir))    
+    # val_base_dirs =cfg.TEST_DATASETS
+    # coco_ds = []
+    # for val_base_dir in val_base_dirs:
+    #     coco_ds.append(COCO(val_base_dir))    
     
     #########################################################
     ##############    TRAINING / EVALUATION   ###############
     #########################################################
-    evaluate_partial = partial(evaluate,
-                               model=model,
-                               criterion=criterion,
-                               postprocessor=postprocessor,
-                               data_loaders = test_data_loaders,
-                               coco_ds = coco_ds,
-                               writer=writer,
-                               save_dir=save_dir,
-                               cfg=cfg,)
+    # evaluate_partial = partial(evaluate,
+    #                            model=model,
+    #                            criterion=criterion,
+    #                            postprocessor=postprocessor,
+    #                            data_loaders = test_data_loaders,
+    #                            coco_ds = coco_ds,
+    #                            writer=writer,
+    #                            save_dir=save_dir,
+    #                            cfg=cfg,)
     
-    print("Start training")
+    print("Starting Testing")
     training_start_time = time.time()
     for epoch in range(start_epoch, cfg.EPOCHS):
         epoch_start_time = time.time()
@@ -157,6 +160,7 @@ if __name__ == "__main__":
     # Get Arguments
     parser.add_argument("--load_dir", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default=None)
+    parser.add_argument("--data_dir", type=str, default=None)
     args = parser.parse_args()
     
     if args.load_dir is not None:

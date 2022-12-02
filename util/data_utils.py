@@ -179,7 +179,6 @@ def display_data(data, save_name="dataset_visualize"):
     fig.tight_layout()
     plt.savefig(f'{save_name}.png', dpi=300)
 
-
 def collate_fn(batch):
     batch = list(zip(*batch))
     batch[0] = nested_tensor_from_tensor_list(batch[0])
@@ -207,8 +206,35 @@ def collate_wrapper(batch):
 def set_worker_sharing_strategy(worker_id: int) -> None:
     torch.multiprocessing.set_sharing_strategy("file_system")
 
-def make_dummy_input(batch_size, num_tgts, tgt_entry_size = 50, img_size = 800, img_max_size= 1333, tgt_size=224, tgt_max_size=448, device = "cuda"):
-    samples = torch.rand( 3, img_size, img_max_size).to(device) #
+def make_dummy_input(batch_size, num_tgts,
+                     tgt_entry_size = 50,
+                     img_size = (800, 1333),
+                     tgt_size= (224, 448),
+                     device = "cuda"):
+    """Creates a dummy input for the model.
+    Can be used to cache the RAM on GPU.
+    Reduces change for later OOM issues.
+
+    Parameters
+    ----------
+    batch_size : int
+    num_tgts : int
+    tgt_entry_size : int, optional
+        Amount of boxes per images, by default 50
+    img_size : tuple, optional
+        Max size of images that can be expected, by default (800x1333)
+    tgt_size : tuple, optional
+        Max size of template images, by default (224x448)
+    device : str, optional, by default "cuda"
+
+    Returns
+    -------
+    Dummy input for the model
+        - samples: torch.Tensor # (B, C, H, W)
+        - tgt_imgs: torch.Tensor # (B, C, H_t, W_t)
+        - target: dict
+    """
+    samples = torch.rand( 3, img_size[0], img_size[1]).to(device) #
     samples = nested_tensor_from_tensor_list([samples]*batch_size)
     tgt_imgs = torch.rand(3, tgt_size, tgt_max_size).to(device)
     tgt_imgs = nested_tensor_from_tensor_list([tgt_imgs]*batch_size*num_tgts)
@@ -216,10 +242,11 @@ def make_dummy_input(batch_size, num_tgts, tgt_entry_size = 50, img_size = 800, 
                 "labels": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
                 "sim_labels": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
                 "classes": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
+                "sim_classes": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
                 "iscrowd": torch.rand(tgt_entry_size).to(device),
                 "size": torch.tensor([img_size, img_max_size]).to(device),
                 "orig_size": torch.tensor([img_size, img_max_size]).to(device),
-                "valid_targets": torch.ones(3, dtype=torch.bool).to(device),}
+                "valid_targets": torch.ones(num_tgts, dtype=torch.bool).to(device),}
     
     base_target = {f"base_{k}" : v for k, v in tgt_dict.items()}
     target = {**tgt_dict, **base_target}  
@@ -353,7 +380,6 @@ class Target():
     def as_dict(self):
         return self.target
 
-
 def extract_tgt_img(image, boxes, num_tgts=3, add_noise=0.3):
     assert isinstance(image, PIL.Image.Image)
     assert isinstance(boxes, torch.Tensor)
@@ -381,29 +407,4 @@ def extract_tgt_img(image, boxes, num_tgts=3, add_noise=0.3):
 
     return out_targets
 
-    # if boxes.shape[0] == 1:
-    #     return image.copy().crop(boxes[0].int().tolist())
-    # tgt_box_int = boxes.int().reshape(-1, 4)
 
-    # widths = (tgt_box_int[:, 2] - tgt_box_int[:, 0])
-    # heights = (tgt_box_int[:, 3] - tgt_box_int[:, 1])
-    # widths_t = torch.where(widths>heights, heights, widths)
-    # heights_t = torch.where(widths>heights, widths, heights)
-
-    # max_w_size = max(widths_t).item()
-    # max_h_size = max(heights_t).item()
-    # max_h_size = max_h_size if max_h_size > max_w_size else max_w_size+1
-    # img_tensor = ToTensor()(image)
-    # tgt_img = torch.zeros((3, max_h_size, max_w_size*boxes.shape[0]))
-    # for i, box in enumerate(tgt_box_int):
-    #     x1, y1, x2, y2 = box
-    #     tgt_i = img_tensor[:, y1:y2, x1:x2].contiguous()
-    #     tgt_i = tgt_i.float()
-    #     if tgt_i.shape[2] > tgt_i.shape[1]:
-    #         tgt_i = tgt_i.permute(0, 2, 1)
-    #         tgt_i = tgt_i.flip(2)
-    #     tgt_i = Resize(max_w_size, max_size = max_h_size)(tgt_i) #, max_size=max_size
-    #     h, w = tgt_i.shape[1:]
-    #     tgt_img[:, :h, i*max_w_size:i*max_w_size+w] = tgt_i
-
-    # return ToPILImage()(tgt_img)

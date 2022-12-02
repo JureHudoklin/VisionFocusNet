@@ -28,8 +28,7 @@ from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_datase
 from data_generator.Objects365 import get_365_data_generator
 from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
 from data_generator.mixed_generator import get_concat_dataset
-
-
+        
 
 def main(args):
     print("\"화이팅\" 세현이 11.17.2022")
@@ -44,12 +43,12 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
     
-    info = "Evaluation on LMO and pretraining on COCO MIX. Detached similarity gradient. COntrastive loss on gradient both on class."
+    info = "Evaluating performance"
     
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "random_testing_9" #coco_cutout_difcrosscc_contrastive_highdnloss_cocomix_lmoval_fulltrain
+        date = "BestRun_finetune_without_coco" #coco_cutout_difcrosscc_contrastive_highdnloss_cocomix_lmoval_fulltrain
         save_dir = os.path.join("checkpoints", date)
         log_save_dir = os.path.join(save_dir, "logs")
         if not os.path.exists(save_dir):
@@ -149,32 +148,35 @@ def main(args):
     training_start_time = time.time()
     for epoch in range(start_epoch, cfg.EPOCHS):
         epoch_start_time = time.time()
-        print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
-        
-        ############### Train ###############
-        stats = train_one_epoch(model=model,
-                                criterion=criterion,
-                                data_loader=train_data_loader,
-                                optimizer = optimizer,
-                                epoch= epoch,
-                                writer = writer,
-                                save_dir= save_dir,
-                                cfg = cfg,
-                                evaluate_fn = evaluate_partial)
-        write_summary(writer, stats[0], epoch, "train_loss")
-        write_summary(writer, stats[1], epoch, "train_stats")
-        
-        save_model(model, optimizer, epoch, save_dir)
-        
-        lr_scheduler.step()
-        print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
+        if not cfg.EVAL_ONLY:
+            print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
+            
+            ############### Train ###############
+            stats = train_one_epoch(model=model,
+                                    criterion=criterion,
+                                    data_loader=train_data_loader,
+                                    optimizer = optimizer,
+                                    epoch= epoch,
+                                    writer = writer,
+                                    save_dir= save_dir,
+                                    cfg = cfg,
+                                    evaluate_fn = evaluate_partial)
+            write_summary(writer, stats[0], epoch, "train_loss")
+            write_summary(writer, stats[1], epoch, "train_stats")
+            
+            save_model(model, optimizer, epoch, save_dir)
+            
+            lr_scheduler.step()
+            print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
         
         ################ Eval ###############
-        # stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loaders, coco_ds, epoch, writer, save_dir, cfg)
-        # exit()
-        # write_summary(writer, stats[0], epoch, "val_loss")
-        # write_summary(writer, stats[1], epoch, "val_stats")
-        # write_summary(writer, coco_stats, epoch, "val")
+        else:
+            stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loaders, coco_ds, epoch, writer, save_dir, cfg)
+            write_summary(writer, stats[0], epoch, "val_loss")
+            write_summary(writer, stats[1], epoch, "val_stats")
+            write_summary(writer, coco_stats, epoch, "val")
+            exit()
+
                 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('DAB-DETR', add_help=False)

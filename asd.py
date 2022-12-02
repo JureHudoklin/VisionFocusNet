@@ -77,23 +77,15 @@ if __name__ == "__main__":
         
         #train_data_loader, test_data_loader = get_avd_data_generator(cfg)
         train_data_loader, test_data_loader = get_mix_data_generator(cfg)
-        test_it = iter(test_data_loader[0])
+        test_it = iter(train_data_loader)
         i = 0
-        print(len(test_data_loader[0]))
+        print(len(train_data_loader))
 
         for i in range(2):
             data = next(test_it)
        
         display_data(data, "test1")
-        
-        test_it = iter(test_data_loader[1])
-        i = 0
-        print(len(test_data_loader[1]))
-
-        for i in range(2):
-            data = next(test_it)
-       
-        display_data(data, "test1")
+      
         # data = next(test_it)
         # display_data(data, "test2")
         # data = next(test_it)

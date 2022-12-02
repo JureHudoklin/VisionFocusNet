@@ -382,7 +382,7 @@ def build_MIX_dataset(image_set, ann_files, args):
                         tgt_transforms = tgt_transforms,
                         inp_transforms = inp_transform,
                         num_tgts=args.NUM_TGTS,
-                        max_images_per_dataset = None, #20000 if image_set == "train" else None,
+                        max_images_per_dataset = None,#7000 if image_set == "train" else None, #None, #
                         min_box_area= 2000 if image_set == "train" else 100,
                         )
     return dataset

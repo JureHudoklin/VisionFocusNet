@@ -683,7 +683,7 @@ class SetCriterion(nn.Module):
 
         denum = (contrast*mask_different).sum(dim=1) # [B*T]
         if (denum == 0).any():
-            print("Warning: Some denum are 0")
+            #print("Warning: Some denum are 0")
             contrast_out = torch.tensor(0.0, device=device)
             #raise ValueError("Some denum are 0")
         enum = contrast/(denum[:, None]) # [B*T, B*M]
@@ -694,7 +694,7 @@ class SetCriterion(nn.Module):
         contrast_out = contrast_out.sum() / B # [B*T]
         # Check that loss is not nan or inf
         if torch.isnan(contrast_out) or torch.isinf(contrast_out):
-            print("Warning: Contrast loss is nan or inf")
+            #print("Warning: Contrast loss is nan or inf")
             contrast_out = torch.tensor(0.0, device=device)
 
         loss = {"loss_contrastive": contrast_out}
@@ -703,7 +703,7 @@ class SetCriterion(nn.Module):
         return loss, stats
     
     @torch.no_grad()
-    def heat_map_gt(self, outputs, targets, box_scale = 0.75):
+    def get_heat_map_gt(self, outputs, targets, box_scale = 0.75):
         """
         Create a heat map for the ground truth boxes
         """
@@ -854,9 +854,9 @@ class SetCriterion(nn.Module):
 
 
         #######################
-        ### Centerness Loss ###
+        ### Centerdness Loss ###
         #######################
-        hm_target, hm_weights, hm_mask = self.heat_map_gt(outputs, targets)
+        hm_target, hm_weights, hm_mask = self.get_heat_map_gt(outputs, targets)
         
         hm_cc = outputs["hm_cc"] # [B, 1, H, W]
         hm_encoder = outputs["heat_maps"][-1] # [B, 1, H, W]
@@ -883,39 +883,6 @@ class SetCriterion(nn.Module):
         stats["heat_map"] = hm_cc.sigmoid().detach()
         stats["heat_map_gt"] = hm_mask.detach()
         
-
-        ######################
-        ### Two STAGE LOSS ###
-        ######################
-        if self.two_stage:
-            # --- BBOX ---
-            two_stage_outputs = outputs["two_stage"]
-
-            ref_point_proposals = two_stage_outputs["ref_point_prop"][0]
-            ref_point_raw_topk = two_stage_outputs["ref_point_prop"][1]
-            ref_point_topk = two_stage_outputs["ref_point_prop"][2]
-            centerness =two_stage_outputs["centerness"][0]
-            centerness_topk =two_stage_outputs["centerness"][1]
-
-            indices = self.two_stage_matcher({"centerness":centerness_topk, "ref_point_prop":ref_point_raw_topk}, targets)
-
-            two_stage_targets = sum(len(t["base_classes"]) for t in targets)
-            two_stage_targets = torch.as_tensor([two_stage_targets], dtype=torch.float, device = device)
-            two_stage_targets = torch.clamp(two_stage_targets, min=1).item()
-
-            idx = self._get_src_permutation_idx(indices)
-
-            src_boxes = ref_point_topk[idx] # [nb_target_boxes, 4]
-            target_boxes = torch.cat([t["base_boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0) # [nb_target_boxes, 4]
-
-            loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
-            loss_bbox = loss_bbox.sum() / two_stage_targets
-
-            loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
-                box_ops.box_cxcywh_to_xyxy(src_boxes),
-                box_ops.box_cxcywh_to_xyxy(target_boxes)))
-            loss_giou = loss_giou.sum() / two_stage_targets
-
         return losses, stats
 
 
@@ -966,12 +933,9 @@ class PostProcessor(nn.Module):
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         boxes = boxes * scale_fct[:, None, :]
 
-        results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
+        results = [{'scores': s.detach(), 'labels': l.detach(), 'boxes': b.detach()} for s, l, b in zip(scores, labels, boxes)]
 
-        tgts = [{'boxes': target['boxes']*scale_fct[i, :], 'labels': target['classes']} for i, target in enumerate(targets)]
-
-
-        return results, tgts
+        return results
 
 def build_model(args, device):
     # Create the model

@@ -282,7 +282,7 @@ def build_dataset(image_set, args):
     assert os.path.exists(root), "Please download COCO dataset to {}".format(root)
     PATHS = {
         "train": (os.path.join(root, "train2017"), os.path.join(root, "annotations/instances_train2017.json")),
-        "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/instances_val2017.json")),
+        "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/jure_coco_val_coco_gt.json")), #instances_val2017.json
     }
     img_folder, ann_file = PATHS[image_set]
     

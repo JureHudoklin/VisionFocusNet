@@ -2,6 +2,7 @@
 import torch
 import numpy as np
 import time
+import json
 import os
 import matplotlib.pyplot as plt
 
@@ -125,6 +126,11 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         
         stats_tracker.update(loss_dict, stats_dict)
         
+    if evaluate_fn is not None:
+        evaluate_fn(epoch = batch+epoch*len(data_loader))
+        model.train()
+        criterion.train()
+        
     return stats_tracker.get_stats_avg()
 
 
@@ -136,11 +142,10 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
         data_loader = data_loaders[i]
         stats_tracker = StatsTracker()
         coco_evaluator = CocoEvaluator(coco_gt) #, tuple('bbox')
-        #eval_test = MeanAveragePrecision(class_metrics=False, box_format="cxcywh")
         batch = 1
         total_batches = len(data_loader)
         start_time = time.time()
-        
+                
         with torch.no_grad():
             for data in data_loader:
             
@@ -151,10 +156,17 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
                 tgt_imgs = tgt_imgs.cuda(non_blocking=True)
                 targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
                 
+                eval_start = time.time()
                 outputs = model(samples, tgt_imgs, targets)
+                eval_time = time.time() - eval_start
+                # t = torch.cuda.get_device_properties(0).total_memory
+                # r = torch.cuda.memory_reserved(0)
+                # a = torch.cuda.memory_allocated(0)
+                # print("Memory use:", a, r)
 
                 ### CALCULATE LOSS ###
                 loss_dict, stats_dict = criterion(outputs, targets)
+                stats_dict["eval_time"] = eval_time
                 weight_dict = criterion.weight_dict
                 dn_weight_dict = criterion.dn_weight_dict
                 loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
@@ -171,11 +183,14 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
                 
                 
                 ### COCO EVAL ###
-                results, tgt_for = postprocessor(targets, outputs)
-                #print(tgt_for)
-                #eval_test.update(results, tgt_for)
+                results = postprocessor(targets, outputs)
                 res = {target['image_id'].item(): output for target, output in zip(targets, results)}
                 coco_evaluator.update(res)
+
+                #ann_res = res_to_ann(target=targets, result=results)
+                #results_gathered.extend(ann_res)
+                
+                
                 
                 # print statistics
                 if batch % 10 == 0:
@@ -186,10 +201,9 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
             
                 batch += 1
               
-            
               
             fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-            #writer.add_figure("val/img", fig, batch+epoch*total_batches)
+            writer.add_figure("val/img", fig, batch+epoch*total_batches)
             fig.savefig(os.path.join(save_dir, f"val_{i}_{epoch}_{batch}.png"))
             plt.close(fig)
                 
@@ -202,17 +216,39 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
             coco_stats = coco_evaluator.coco_eval['bbox'].stats.tolist()
             coco_dict = {name: coco_stats[i] for i, name in enumerate(names)}
             
-            
-            #eval_test_res = eval_test.compute()
-            #print(eval_test_res)
-              
+        
             
             stats = stats_tracker.get_stats_avg()
             write_summary(writer, stats[0], epoch, f"val_{i}_loss")
             write_summary(writer, stats[1], epoch, f"val_{i}_stats")
             write_summary(writer, coco_dict, epoch, f"val_{i}")
+            
+            # Save gathered results
+            #with open(os.path.join(save_dir, f"val_{i}_{epoch}_{batch}.json"), "w") as f:
+            #    json.dump(results_gathered, f)
+            
         
     return stats, coco_dict
+
+
+def res_to_ann(target, result):
+    annotations = []
+    for tgt, res in zip(target, result):
+        ann = {}
+        ann["image_id"] = tgt["image_id"].item()
+        scores = res["scores"]
+        valid = scores > 0.5
+        boxes = res["boxes"][valid].tolist()
+        labels = res["labels"][valid].tolist()
+        scores = scores[valid].tolist()
+        
+        for box, label, score in zip(boxes, labels, scores):
+            ann["bbox"] = box
+            ann["category_id"] = label
+            ann["score"] = score
+            annotations.append(ann.copy())
+        
+    return annotations
 
 def dry_run(cfg, model, criterion, optimizer):
     samples, tgt_imgs, targets = make_dummy_input(cfg.BATCH_SIZE, cfg.NUM_TGTS)

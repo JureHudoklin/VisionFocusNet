@@ -37,7 +37,7 @@ def load_model(model, optimizer, load_dir, device, epoch=None):
                 ep_inter.append(ep)
         epoch = max(ep_num) if len(ep_num) > 0 else ep_inter[0]
         
-        
+    print(f"Loading model from epoch: {epoch}")
     checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None:
@@ -121,13 +121,13 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
                 obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
                 if c_vl > 0.5:
                     alpha = 1
-                    edgecolor = "red"
+                    edgecolor = "orange"
                 elif s_vl > 0.5:
                     alpha = 1
                     edgecolor = "orange"
                 else:
                     edgecolor = "black"
-                    alpha = 0.1
+                    alpha = 0.0
 
                 cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
 
@@ -138,7 +138,7 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             
         ### Plot Target Objects ###
         #for j in range(N_t):
-        tgt_img = denorm2(tgt_imgs[b, 1].contiguous())
+        tgt_img = denorm2(tgt_imgs[b, 0].contiguous())
         tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
         ax = axs[b, 1]
         ax.imshow(tgt_img)
