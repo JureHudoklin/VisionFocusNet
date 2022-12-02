@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 from typing import Optional, List
 
 import torch
+import time
 from torch import Tensor, nn
 from torchvision.ops import box_convert
 
@@ -127,7 +128,11 @@ def _max_by_axis(the_list):
             maxes[index] = max(maxes[index], item)
     return maxes
 
+def get_ETA(start_time, current_iter, total_iter):
+    ETA = (time.time() - start_time) * (total_iter-current_iter) / current_iter
+    ETA_str = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"   
 
+    return ETA, ETA_str
 
 
 

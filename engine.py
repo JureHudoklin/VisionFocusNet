@@ -251,16 +251,31 @@ def res_to_ann(target, result):
     return annotations
 
 def dry_run(cfg, model, criterion, optimizer):
+    """ Perform a dry run to check for errors and reserve memory .
+    Will do a forward and backward pass without updating the weights.
+    The gradient will be set to 0 after the backward pass.
+
+    Parameters
+    ----------
+    cfg : Config
+    model : torch.nn.Module
+    criterion : torch.nn.Module
+        Class that computes the loss
+    optimizer : torch.optim.Optimizer
+    """
+    # Create a dummy batch
     samples, tgt_imgs, targets = make_dummy_input(cfg.BATCH_SIZE, cfg.NUM_TGTS)
+    # Forward pass
     outputs = model(samples, tgt_imgs, targets)
+    # Compute loss
     loss_dict, stats_dict = criterion(outputs, targets)
     weight_dict = criterion.weight_dict
     dn_weight_dict = criterion.dn_weight_dict
     loss_matching = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
     loss_dn = sum(loss_dict[k] * dn_weight_dict[k] for k in loss_dict.keys() if k in dn_weight_dict)
-    
     losses = loss_matching + loss_dn
 
+    # Backward pass
     losses.backward()
     if cfg.MAX_NORM > 0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.MAX_NORM)
