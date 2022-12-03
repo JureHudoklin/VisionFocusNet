@@ -174,7 +174,7 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
                    batch_size,
                    training, 
                    hidden_dim, 
-                   label_enc):
+                   ):
     """
     Prepare dn components 
     

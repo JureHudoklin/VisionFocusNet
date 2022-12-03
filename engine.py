@@ -1,21 +1,19 @@
 
-import torch
-import numpy as np
-import time
 import json
 import os
+import time
+
 import matplotlib.pyplot as plt
-
+import numpy as np
+import torch
 import torch.nn as nn
-#from mem_top import mem_top
-from torchvision.datasets import coco
 
-from util.statistics import StatsTracker
-from util.network_utils import display_model_outputs, write_summary, save_model
+from data_generator.coco_eval import CocoEvaluator
 from util.data_utils import make_dummy_input
 from util.misc import get_ETA
-from data_generator.coco_eval import CocoEvaluator
-from torchmetrics.detection.mean_ap import MeanAveragePrecision
+from util.network_utils import (display_heat_maps, display_model_outputs,
+                                save_model, write_summary)
+from util.statistics import StatsTracker
 
 
 def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, save_dir, cfg,
@@ -32,69 +30,48 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
     
     
     for data in data_loader: #samples, tgt_imgs, targets
+        ### Get Data ###
+        samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
+        samples = samples.cuda(non_blocking=True)
+        tgt_imgs = tgt_imgs.cuda(non_blocking=True)
+        targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
+
+
         if batch == 1:
             # --- Do a dry run to reserve the buffers ---
             dry_run(cfg, model, criterion, optimizer)
             print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
-        else:            
             
-            # print statistics
-            if batch % 10 == 0:
-                ETA = get_ETA(start_time, batch, total_batches)   
-                description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
-                print(description, )
-                
-            if batch % 100 == 0:
-                stats = stats_tracker.get_stats_current()
-                merged = {**stats[0], **stats[1]}
-                write_summary(writer, merged, step, f"running_stats")
+        # print statistics
+        if batch % 10 == 0:
+            ETA = get_ETA(start_time, batch, total_batches)   
+            description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
+            print(description, )
             
-            if batch % 1000 == 0:
-                fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                writer.add_figure("traing/img", fig, step)
-                plt.close(fig)
-                
-                # Display heatmaps
-                hm = stats_dict["heat_map"] # b, 1, h, w
-                hm = hm.repeat(1, 3, 1, 1) # b, 3, h, w
-                hm = hm*torch.tensor([250, 0, 0]).view(1, 3, 1, 1).to(hm.device)
-                hm_gt = stats_dict["heat_map_gt"] # b, 1, h, w
-                hm_gt = hm_gt.repeat(1, 3, 1, 1) # b, 3, h, w
-                hm_gt = hm_gt*torch.tensor([60, 60, 60]).view(1, 3, 1, 1).to(hm_gt.device)
-                hm_gt = hm_gt.float()
-                hm_sum = hm + hm_gt
-                step = batch+epoch*len(data_loader)
-                writer.add_images("heat_map", hm_sum, step, dataformats="NCHW")
-                
-                if evaluate_fn is not None:
-                    evaluate_fn(epoch = batch+epoch*len(data_loader))
-                    model.train()
-                    criterion.train()
-                
-            if batch % 5000 == 0:
-                torch.cuda.empty_cache()
-                save_model(model, optimizer, epoch, save_dir, name = "intermediate")
+        if batch % 100 == 0:
+            stats = stats_tracker.get_stats_current()
+            merged = {**stats[0], **stats[1]}
+            write_summary(writer, merged, step, f"running_stats")
+        
+        if batch % 1000 == 0:
+            fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+            writer.add_figure("traing/img", fig, step)
+            plt.close(fig)
             
-            if batch == len(data_loader)-1:
-                stats = stats_tracker.get_stats_current()
-                merged = {**stats[0], **stats[1]}
-                step = batch+epoch*len(data_loader)
-                write_summary(writer, merged, step, f"running_stats")
-                
-                fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                fig.savefig(os.path.join(save_dir, f"{epoch}_{batch}.png"))
-                #writer.add_figure("traing/img", fig, batch+epoch*total_batches)
-                plt.close(fig)
+            hm_fig = display_heat_maps(stats_dict["heat_map"], stats_dict["heat_map_gt"], samples, step)
+            writer.add_figure("traing/img_hm", hm_fig, step)
+           
+            if evaluate_fn is not None:
+                evaluate_fn()
+                model.train()
+                criterion.train()
+            
+        if batch % 5000 == 0:
+            torch.cuda.empty_cache()
+            save_model(model, optimizer, epoch, step, save_dir, name = "intermediate")
                     
         batch += 1
         step += bs
-        
-        samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
-        #with torch.autograd.set_detect_anomaly(True):
-
-        samples = samples.cuda(non_blocking=True)
-        tgt_imgs = tgt_imgs.cuda(non_blocking=True)
-        targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
         
         outputs = model(samples, tgt_imgs, targets)
 

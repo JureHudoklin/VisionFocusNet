@@ -16,7 +16,7 @@ from util.misc import NestedTensor, nested_tensor_from_tensor_list
 from util.statistics import prec_acc_rec
 from util.dn_utils import prepare_for_dn, dn_post_process, DnLoss, prepare_for_dino_dn
 
-
+from configs.vision_focusnet_config import Config
 from .backbone import build_backbone, build_backbone_custom
 from .transformer_def import build_transformer
 from .template_encoder import build_template_encoder
@@ -39,7 +39,8 @@ class DETR(nn.Module):
                  num_levels,
                  two_stage = False,
                  dn_args: dict = None,
-                 train_method = "both"):
+                 contrastive_loss = True,
+                 centeredness_loss = True,):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -56,10 +57,10 @@ class DETR(nn.Module):
         self.num_levels = num_levels
         self.aux_loss = aux_loss
         self.two_stage = two_stage
-        self.train_method = train_method
+        self.contrastive_loss = contrastive_loss
+        self.centeredness_loss = centeredness_loss
 
         self.dn_args = dn_args
-
 
         ### Networks ###
         self.transformer = transformer
@@ -79,19 +80,16 @@ class DETR(nn.Module):
         self.feat_all_norm = nn.LayerNorm(d_model)
 
         ### Various embedding networks ###
-        self.class_embed_pre = nn.Linear(self.d_model, 1)
         self.class_embed = nn.Linear(self.d_model, 2)
         self.sim_embed = nn.Linear(self.d_model, 2)
         self.refpoint_embed = nn.Embedding(num_queries, 4)
         if self.two_stage:
             self.refpoint_embed.requires_grad = False
 
-        self.label_enc = nn.Embedding(3, self.d_model)
         te_channels = template_encoder.out_channels
         self.template_proj= MLP(te_channels, self.d_model*2, self.d_model, 3)
         self.template_proj_norm = nn.LayerNorm(te_channels)
         self.template_self_attn = nn.MultiheadAttention(te_channels, 8, bias=False, batch_first=True)
-
 
         self.contrastive_projection = nn.Linear(self.d_model, self.d_model*4)
 
@@ -99,9 +97,7 @@ class DETR(nn.Module):
 
         ### Initialize Weights ###
         # init prior_prob setting for focal loss
-        prior_prob = 0.2
-        bias_value = math.log((1 - prior_prob) / prior_prob)
-
+        
         self.class_embed.bias.data = torch.tensor([0.01, 0.99])
         self.sim_embed.bias.data = torch.tensor([0.01, 0.99])
 
@@ -145,7 +141,10 @@ class DETR(nn.Module):
         obj_encs = obj_encs.decompose()[0] # [BS*num_tgts, C]
         num_tgts = obj_encs.shape[0] // bs
         obj_encs = obj_encs.view(bs, num_tgts, -1)
-        obj_encs = self.template_self_attn(obj_encs, obj_encs, obj_encs)[0]
+        if self.use_checkpointing:
+            obj_encs = checkpoint.checkpoint(self.template_self_attn, obj_encs, obj_encs, obj_encs)[0]
+        else:
+            obj_encs = self.template_self_attn(obj_encs, obj_encs, obj_encs)[0]
         obj_encs = self.template_proj_norm(obj_encs)
         obj_encs = obj_encs.view(bs*num_tgts, -1)
         obj_encs_ali = self.template_proj(obj_encs)
@@ -249,7 +248,6 @@ class DETR(nn.Module):
                            bs,
                            self.training,
                            self.d_model,
-                           self.label_enc,
             )
 
         ca, sa, reference_pts_layers, out_mem, out_prop, out_centerness = self.transformer(src = feat_list,
@@ -279,7 +277,6 @@ class DETR(nn.Module):
         rois = torch.stack(rois, dim = -1).mean(dim = -1) # [num_layers, bs, num_queries, hidden_dim]
         obj_enc_tgt = obj_enc_tgt.permute(1, 0, 2).unsqueeze(0).repeat(ca.shape[0], 1, ca.shape[2], 1) # [BS, NQ, 1, C]
 
-        #outputs_class_pre = self.class_embed_pre(sa.detach()).sigmoid() # [num_layers, bs, num_queries, num_classes]
         outputs_class = self.class_embed(ca) # [num_layers, bs, num_queries, 2] #-obj_enc_tgt.detach()
         output_sim = self.sim_embed(ca.detach()) # [num_layers, bs, num_queries, 2] #-obj_enc_tgt
         outputs_coord = reference_pts_layers # [num_layers, bs, num_queries, 4]
@@ -319,7 +316,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes,
+    def __init__(self,
                  matcher, two_stage_matcher,
                  weight_dict, dn_weight_dict,
                  dn_args,
@@ -328,6 +325,8 @@ class SetCriterion(nn.Module):
                  losses,
                  train_method,
                  two_stage,
+                 use_contrastive_loss = None,
+                 use_centeredness_args = None,
                  base_loss = False,
                  base_loss_levels = 0):
         """ Create the criterion.
@@ -339,7 +338,6 @@ class SetCriterion(nn.Module):
             losses: list of all the losses to be applied. See get_loss for list of available losses.
         """
         super().__init__()
-        self.num_classes = num_classes
         self.matcher = matcher
         self.two_stage_matcher=two_stage_matcher
         self.weight_dict = weight_dict
@@ -351,10 +349,12 @@ class SetCriterion(nn.Module):
         self.bs = batch_size
         self.train_method = train_method
         self.two_stage = two_stage
+        
+        self.use_contrastive_loss = use_contrastive_loss
+        self.use_centeredness_args = use_centeredness_args
+        
         self.base_loss = base_loss
         self.base_loss_levels = base_loss_levels
-
-        self.contrast_temp = 0.1
 
         self.dn_loss = DnLoss(batch_size=self.bs)
 
@@ -447,7 +447,6 @@ class SetCriterion(nn.Module):
             stats = {"class_acc": acc, "class_prec": prec, "class_rec":rec}
             stats.update(losses)
         return losses, stats
-
 
     def loss_similarity(self, outputs, targets, indices, indices_2ndbest, num_boxes, log=True):
         """
@@ -558,7 +557,6 @@ class SetCriterion(nn.Module):
 
         return losses, stats
 
-
     def loss_boxes(self, outputs, targets, indices, indices_2ndbest, num_boxes, log=True):
         """
         Bounding box loss. Boxes should be in format (center_x, center_y, w, h), normalized by the image size.
@@ -608,7 +606,7 @@ class SetCriterion(nn.Module):
 
         return losses, stats
 
-    def loss_contrastive(self, outputs, targets):
+    def loss_contrastive(self, outputs, targets, contrast_temp = 0.1):
         ### Extract outputs ###
         image_feat = outputs["features"] # list[B, C, H, W]
         masks = outputs["mask"] # list[B, H, W]
@@ -635,7 +633,6 @@ class SetCriterion(nn.Module):
             return {}, {}
 
         ### Calculate remaining ###
-        #print(classes)
         obj_encs_classes = []
         for cls, cls_lbl in zip(classes, class_lbl):
             valid_cls = cls[cls_lbl == 1]
@@ -657,7 +654,7 @@ class SetCriterion(nn.Module):
         for i, (feat, mask, size) in enumerate(zip(image_feat, masks, image_sizes)):
             boxes_abs = [box_ops.box_cxcywh_to_xyxy(box) * torch.cat([size[i], size[i]], dim=0) for i, box in enumerate(base_boxes)] # [[N, 4], ...]
 
-            if len(boxes_abs) != self.bs:
+            if len(boxes_abs) != B:
                 contrast_out = torch.tensor(0.0, device=device)
                 loss = {"loss_contrastive": contrast_out}
                 stats = {"loss_contrastive": contrast_out.detach()}
@@ -673,8 +670,7 @@ class SetCriterion(nn.Module):
 
         ### Perform contrastive loss ###
         contrast = torch.einsum("nc,mc->nm", obj_encs, roi) # [B*T, B*M]
-
-        contrast = torch.exp(contrast / self.contrast_temp)
+        contrast = torch.exp(contrast / contrast_temp)
 
         # Create a mask where classes match
         base_classes = torch.cat(base_classes, dim=0) # [B*M]
@@ -701,6 +697,39 @@ class SetCriterion(nn.Module):
         stats = {"loss_contrastive": contrast_out.detach()}
 
         return loss, stats
+    
+    def loss_centeredness(self, outputs, targets, log=True, *args, **kwargs):
+        hm_target, hm_weights, hm_mask = self.get_heat_map_gt(outputs, targets)
+            
+        hm_cc = outputs["hm_cc"] # [B, 1, H, W]
+        hm_encoder = outputs["heat_maps"][-1] # [B, 1, H, W]
+        bs, _, h, w = hm_cc.shape
+
+        # Compute the centerness loss- focal loss
+        l_cen = F.binary_cross_entropy_with_logits(hm_cc.reshape(bs, -1),
+                                        hm_target.reshape(bs, -1),
+                                        weight=hm_weights.reshape(bs, -1),
+                                        reduction="none") #[B, HW]
+        l_cen = l_cen.sum(dim=1) / (hm_mask.view(bs, -1).sum(dim=-1) + 1)
+        l_cen = l_cen.mean()
+        
+        l_enc = F.binary_cross_entropy_with_logits(hm_encoder.reshape(bs, -1),
+                                        hm_target.reshape(bs, -1),
+                                        weight=hm_weights.reshape(bs, -1),
+                                        reduction="none")
+        l_enc = l_enc.sum(dim=1) / (hm_mask.view(bs, -1).sum(dim=-1) + 1)
+        l_enc = l_enc.mean()
+        loss = l_cen + l_enc
+        
+        losses = {}
+        stats = {}
+        losses["loss_centerness"] = loss
+        
+        if log:
+            stats["loss_centerness"] = loss.detach()
+            stats["heat_map"] = hm_encoder.sigmoid().detach()
+            stats["heat_map_gt"] = hm_mask.detach()
+        return losses, stats
     
     @torch.no_grad()
     def get_heat_map_gt(self, outputs, targets, box_scale = 0.75):
@@ -794,20 +823,6 @@ class SetCriterion(nn.Module):
         losses = {}
         stats = {}
     
-        
-        ### CONTRASTIVE LOSS ###
-        if self.train_method == "contrastive_only" or self.train_method == "both":
-            loss, stats = self.loss_contrastive(outputs, targets)
-
-            losses.update(loss)
-            stats.update(stats)
-
-            if self.train_method == "contrastive_only":
-                losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.weight_dict})
-                losses.update({k: torch.tensor(0, dtype=float, device="cuda") for k in self.dn_weight_dict})
-                return losses, stats
-
-
         outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -852,44 +867,30 @@ class SetCriterion(nn.Module):
             dn_losses = self.dn_loss(outputs["pred_class_logits"], outputs["pred_sim_logits"], outputs["pred_boxes"], mask_dict, aux_num)
             losses.update(dn_losses)
 
+        ########################
+        ### CONTRASTIVE LOSS ###
+        ########################
+        if self.use_contrastive_loss:
+            loss, stats = self.loss_contrastive(outputs, targets)
+            losses.update(loss)
+            stats.update(stats)
 
-        #######################
-        ### Centerdness Loss ###
-        #######################
-        hm_target, hm_weights, hm_mask = self.get_heat_map_gt(outputs, targets)
-        
-        hm_cc = outputs["hm_cc"] # [B, 1, H, W]
-        hm_encoder = outputs["heat_maps"][-1] # [B, 1, H, W]
-        bs, _, h, w = hm_cc.shape
-
-        # Compute the centerness loss- focal loss
-        l_cen = F.binary_cross_entropy_with_logits(hm_cc.reshape(bs, -1),
-                                           hm_target.reshape(bs, -1),
-                                           weight=hm_weights.reshape(bs, -1),
-                                           reduction="none") #[B, HW]
-        l_cen = l_cen.sum(dim=1) / (hm_mask.view(bs, -1).sum(dim=-1) + 1)
-        l_cen = l_cen.mean()
-        
-        l_enc = F.binary_cross_entropy_with_logits(hm_encoder.reshape(bs, -1),
-                                           hm_target.reshape(bs, -1),
-                                           weight=hm_weights.reshape(bs, -1),
-                                           reduction="none")
-        l_enc = l_enc.sum(dim=1) / (hm_mask.view(bs, -1).sum(dim=-1) + 1)
-        l_enc = l_enc.mean()
-                
-        losses["loss_centerness"] = l_cen + l_enc
-        stats["loss_centerness"] = l_cen.detach()
-
-        stats["heat_map"] = hm_cc.sigmoid().detach()
-        stats["heat_map_gt"] = hm_mask.detach()
+        #########################
+        ### CENTEREDNESS LOSS ###
+        #########################
+        if self.use_centeredness_args:
+            loss, stats = self.loss_centeredness(outputs, targets)
+            losses.update(loss)
+            stats.update(stats)
         
         return losses, stats
 
 
 class PostProcessor(nn.Module):
-    def __init__(self, num_select=100) -> None:
+    def __init__(self, num_select=100, accumulate = False) -> None:
         super().__init__()
         self.num_select = num_select
+        self.accumulate = accumulate
 
     @torch.no_grad()
     def forward(self, targets, outputs):
@@ -904,22 +905,25 @@ class PostProcessor(nn.Module):
         """
         img_sizes = [target['orig_size'] for target in targets]
         img_sizes = torch.stack(img_sizes, dim=0)
-        out_logits, _, out_bbox = outputs['pred_class_logits'], outputs['pred_sim_logits'], outputs['pred_boxes']
-        # out_logits = # [B, Q, C]
-        # pred_sim_logits = # [B, Q, N]
+        out_logits, out_sim_logits, out_bbox = outputs['pred_class_logits'], \
+                                               outputs['pred_sim_logits'], \
+                                               outputs['pred_boxes']
+        # out_logits = # [B, Q, 2]
+        # pred_sim_logits = # [B, Q, 2]
 
         assert out_logits.shape[0] == img_sizes.shape[0]
-        assert img_sizes.shape[1] == 2
-        class_ids =  [target['classes'] for target in targets] # B, N
-        class_ids = [target[0] if len(target) > 0 else torch.tensor(0, dtype=torch.long, device = target.device) for target in class_ids]
+        assert img_sizes.shape[1] == 2   
+        
+        ### Get the class id for what we are predicting ###
+        class_ids = []
+        for tgt in targets:
+            clas, lbl = tgt["classes"], tgt["labels"]
+            ids = torch.where(lbl == 1, clas, torch.zeros_like(clas))
+            ids = ids[ids != 0] if len(ids[ids != 0]) > 0 else torch.tensor([0], dtype=torch.long, device = ids.device)
+            class_ids.append(ids[0])
         class_ids = torch.stack(class_ids, dim=0) # B
 
-        # Check if any images has no objects
-        no_obj_batch = torch.where(class_ids == 0, torch.tensor(1, dtype=torch.long, device = class_ids.device), torch.tensor(0, dtype=torch.long, device = class_ids.device))
-        no_obj_batch = no_obj_batch.view(-1, 1).repeat(1, out_logits.shape[1]) # [B*Q]
-
-        prob = out_logits.softmax(-1) # [B, Q, 2]
-        prob = torch.where(no_obj_batch == 1, prob[:, :, 0], prob[:, :, 1])
+        prob = out_logits.softmax(-1)[..., -1] # B, Q, 1
 
         topk_values, topk_indexes = torch.topk(prob, self.num_select, dim=1) # [B, M]
         labels = torch.ones_like(topk_values) * class_ids[:, None] # [B, M]
@@ -938,18 +942,12 @@ class PostProcessor(nn.Module):
         return results
 
 def build_model(args, device):
-    # Create the model
-    num_classes = 2 # COCO dataset
-
+    assert isinstance(args, Config)
+    ### CREATE THE MODEL ###
     #backbone = build_backbone(args)
     backbone = build_backbone_custom(args)
-
     transformer = build_transformer(args)
-
-    if args.TEMPLATE_ENCODER["SAME_AS_BACKBONE"]:
-            template_encoder = backbone
-    else:
-        template_encoder = build_template_encoder(args)
+    template_encoder = build_template_encoder(args)
 
     model = DETR(
         backbone,
@@ -961,39 +959,33 @@ def build_model(args, device):
         num_levels=args.NUM_LEVELS,
         two_stage=args.TWO_STAGE,
         dn_args=args.DN_ARGS,
-        train_method = args.TRAIN_METHOD,
+        contrastive_loss=args.CONTRASTIVE_LOSS > 0,
+        centeredness_loss=args.CENTEREDNESS_LOSS > 0,
     )
 
+    ### WEIGHTS AND LOSSES ###
     # Regular Loss Weights
     matcher = build_matcher(args)
-    weight_dict = {"loss_ce": args.CLASS_LOSS_COEF, "loss_sim" : args.SIM_LOSS_COEF, "loss_bbox": args.BBOX_LOSS_COEF, "loss_giou" : args.GIOU_LOSS_COEF}
+    weight_dict = args.LOSS_WEIGHTS
 
     two_stage_matcher = build_two_stage_matcher(args)
     if args.TWO_STAGE:
         weight_dict.update({"two_stage_loss_bbox": 1, "two_stage_loss_giou" : 1, "two_stage_loss_centerness" : 0.5})
-
-    weight_dict["loss_centerness"] = 1.0
-
-    if args.TRAIN_METHOD == "detection_only":
-        weight_dict.update({"loss_contrastive": 0.0})
-    else:
-        weight_dict.update({"loss_contrastive": args.CONTRASTIVE_LOSS_COEF})
 
     if args.AUX_LOSS:
         aux_weight_dict = {}
         for i in range(args.NUM_DECODER_LAYERS - 1):
             aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
-
+        
+    # Add Contrastive and centeredness Loss Weights
+    weight_dict.update({"contrastive_loss": args.CONTRASTIVE_LOSS, "centeredness_loss": args.centeredness_LOSS})
 
     # Dn Loss Weights
     dn_weight_dict = {}
     if args.DN_ARGS["USE_DN"]:
-        dn_weight_dict["tgt_loss_ce"] = args.CLASS_LOSS_COEF
-        dn_weight_dict["tgt_loss_sim"] = args.SIM_LOSS_COEF
-        dn_weight_dict["tgt_loss_bbox"] = args.BBOX_LOSS_COEF
-        dn_weight_dict["tgt_loss_giou"] = args.GIOU_LOSS_COEF
-
+        dn_weight_dict = {f"tgt_{key}":value for key, value in args.LOSS_WEIGHTS.items()}
+        
     if args.DN_ARGS["USE_DN"] and args.DN_ARGS["USE_DN_AUX"]:
         aux_weight_dict = {}
         for i in range(args.NUM_DECODER_LAYERS - 1):
@@ -1001,10 +993,9 @@ def build_model(args, device):
         dn_weight_dict.update(aux_weight_dict)
 
 
-    losses = ["labels", "similarity", "boxes", "cardinality"] #"similarity",
+    losses = ["labels", "similarity", "boxes", "cardinality"] 
 
-    criterion = SetCriterion(num_classes,
-                             matcher=matcher,
+    criterion = SetCriterion(matcher=matcher,
                              two_stage_matcher=two_stage_matcher,
                              weight_dict=weight_dict,
                              dn_weight_dict=dn_weight_dict,
@@ -1012,7 +1003,6 @@ def build_model(args, device):
                              focal_alpha=args.FOCAL_ALPHA,
                              batch_size = args.BATCH_SIZE,
                              losses=losses,
-                             train_method=args.TRAIN_METHOD,
                              two_stage=args.TWO_STAGE,
                              base_loss=True,
                              base_loss_levels=4)

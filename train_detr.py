@@ -20,6 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from engine import train_one_epoch, evaluate
 from util.network_utils import load_model, partial_load_model, save_model, write_summary
+from util.misc import create_directory_structure
 from configs.vision_focusnet_config import Config
 from models.detr_deform import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
@@ -33,43 +34,29 @@ from data_generator.mixed_generator import get_concat_dataset
 def main(args):
     print("\"화이팅\" 세현이 11.17.2022")
     # Set Device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cuda:0")
-   
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")   
    
     # fix the seed for reproducibility
-    seed = 42
+    seed = 17
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    
-    info = "Evaluating performance"
-    
+        
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "BestRun_finetune_without_coco" #coco_cutout_difcrosscc_contrastive_highdnloss_cocomix_lmoval_fulltrain
         save_dir = os.path.join("checkpoints", date)
-        log_save_dir = os.path.join(save_dir, "logs")
-        if not os.path.exists(save_dir):
-            os.makedirs(log_save_dir)
-            print(f"Created directory: {save_dir}")
+        create_directory_structure(save_dir)
+        print(f"Saving to: {save_dir}")
     else:
         save_dir = args.save_dir
-        log_save_dir = os.path.join(save_dir, "logs")
-        if not os.path.exists(save_dir):
-            os.makedirs(log_save_dir)
-            print(f"Created directory: {save_dir}")
-        
+        create_directory_structure(save_dir)
+        print(f"Saving to: {save_dir}")
+            
     if args.load_dir is not None:
         cfg = Config(load_path=args.load_dir, save_path=save_dir)
     else:
         cfg = Config(save_path=save_dir)
-        start_epoch = None
-    
-    # Save Info
-    with open(os.path.join(save_dir, "info.txt"), "w") as f:
-        f.write(info)
 
     ######### BUILD MODEL #########
     model, criterion, postprocessor = build_model(cfg, device)
@@ -83,11 +70,11 @@ def main(args):
         {"params": [p for n, p in model.named_parameters() if ("backbone" not in n) and ("template_encoder" not in n) and p.requires_grad]},
         {
             "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
-            "lr": cfg.LR_BACKBONE,
+            "lr": cfg.BACKBONE["lr"],
         },
     ]
     param_dicts.append({"params": [p for n, p in model.named_parameters() if "template_encoder" in n and p.requires_grad],
-                        "lr": cfg.TEMPLATE_ENCODER["LR"]})
+                        "lr": cfg.TEMPLATE_ENCODER["lr"]})
     
     optimizer = torch.optim.AdamW(param_dicts, lr=cfg.LR,
                                   weight_decay=cfg.WEIGHT_DECAY)
@@ -95,35 +82,28 @@ def main(args):
     ######### LOAD MODEL IF PROVIDED #########
     last_epoch = -1
     start_epoch = 0
+    step = 0
     if args.load_dir is not None:
-        try:
-            model, optimizer, start_epoch = load_model(model, optimizer, args.load_dir, device, epoch=None)
-            if start_epoch is None:
-                start_epoch = 0
-            else:
-                last_epoch = start_epoch
-                start_epoch += 1
-        except:
-            print("WARNING: Could not load full model dict. Loading only matching weights")
-            model, optimizer, start_epoch = partial_load_model(model, optimizer, args.load_dir, device, epoch=None)
+        model, optimizer, start_epoch, step = load_model(model, optimizer, args.load_dir, device, epoch=None)
+        if start_epoch is None:
+            start_epoch = 0
+        else:
+            last_epoch = start_epoch
             start_epoch += 1
         print(f"Loaded model from {args.load_dir} at epoch {start_epoch}")
         
-    
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=last_epoch)
     
     # Set Logging
-    writer = SummaryWriter(log_dir=log_save_dir)
+    writer = SummaryWriter(log_dir=os.path.join(save_dir, "logs"))
 
 
     ######### GET DATASET #########
     # COCO
     #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
-    # 365
-    #train_data_loader, test_data_loader = get_365_data_generator(cfg)
- 
     # MIX
     train_data_loader, test_data_loaders = get_concat_dataset(cfg)
+    # Concat
     
     # Get COCO GT for evaluation
     val_base_dirs =cfg.TEST_DATASETS
@@ -148,7 +128,7 @@ def main(args):
     training_start_time = time.time()
     for epoch in range(start_epoch, cfg.EPOCHS):
         epoch_start_time = time.time()
-        if not cfg.EVAL_ONLY:
+        if not args.eval_only:
             print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
             
             ############### Train ###############
@@ -157,6 +137,7 @@ def main(args):
                                     data_loader=train_data_loader,
                                     optimizer = optimizer,
                                     epoch= epoch,
+                                    step=step,
                                     writer = writer,
                                     save_dir= save_dir,
                                     cfg = cfg,
@@ -164,7 +145,7 @@ def main(args):
             write_summary(writer, stats[0], epoch, "train_loss")
             write_summary(writer, stats[1], epoch, "train_stats")
             
-            save_model(model, optimizer, epoch, save_dir)
+            save_model(model, optimizer, epoch, step, save_dir)
             
             lr_scheduler.step()
             print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
@@ -183,6 +164,7 @@ if __name__ == "__main__":
     # Get Arguments
     parser.add_argument("--load_dir", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default=None)
+    parser.add_argument("--eval_only", action="store_true")
     args = parser.parse_args()
     
     if args.load_dir is not None:

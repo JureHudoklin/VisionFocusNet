@@ -140,16 +140,16 @@ class TemplateEncoder_ResNet(BackboneBase):
     
 def build_template_encoder(cfg):
     args = cfg.TEMPLATE_ENCODER
-    if args["LR"] > 0:
+    if args["lr"] > 0:
         trainable = True
     else:
         trainable = False
-    name = args["NAME"]
+    name = args["name"]
     
     if name == "vits16":
-        model = DinoVits16(trainable=trainable, pretrained=args["PRETRAINED"], use_checkpointing=args["USE_CHECKPOINTING"])
+        model = DinoVits16(trainable=trainable, pretrained=args["pretrained"], use_checkpointing=args["use_checkpointing"])
     elif name == "resnet50":
-        model = TemplateEncoder_ResNet("resnet50", trainable, False, False, pretrained=args["PRETRAINED"])
+        model = TemplateEncoder_ResNet("resnet50", trainable, False, False, pretrained=args["pretrained"])
     else:
         raise ValueError(f"Template Encoder -- {name} -- is not supported.")
     return model

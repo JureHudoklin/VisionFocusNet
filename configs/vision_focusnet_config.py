@@ -8,9 +8,9 @@ class Config():
     ############
     # Training #
     ############
-    LR = 0.0001
-    LR_BACKBONE = 1e-5
-    WEIGHT_DECAY = 0.0001
+    LR = 1e-4
+    WEIGHT_DECAY = 1e-4
+    
     TRAIN_METHOD = "both" # "contrastive_only", "detection_only", "both"
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
@@ -23,21 +23,31 @@ class Config():
     
     FOCAL_ALPHA = 0.25
     
-    CLASS_LOSS_COEF = 1.0
-    SIM_LOSS_COEF = 1.0
-    BBOX_LOSS_COEF = 5.0
-    GIOU_LOSS_COEF = 2.0
-    CONTRASTIVE_LOSS_COEF = 0.2
-    
+    ################
+    # LOSS WEIGHTS #
+    ################
+    LOSS_WEIGHTS = {
+        "loss_ce": 1.0, # Classification loss for same objects 
+        "loss_sim" : 1.0, # Classification loss for similar objects
+        "loss_bbox" : 5.0, # Bounding box regression loss weight
+        "loss_giou" : 2.0, # Generalized IoU loss weight
+    }
+    CONTRASTIVE_LOSS = 0.2
+    CENTEREDNESS_LOSS = 1.0
     
     ############
     # Backbone #
     ############
-    BACKBONE = 'resnet50'
-    DILATION = False
-    POSITION_EMBEDDING = 'sine'
-    RETURN_INTERM_LAYERS = True # masks
-        
+    BACKBONE = {
+        "name": "resnet50",
+        "dilation": False,
+        "return_intermediate_layers": True,
+        "lr" : 1e-5,
+        "pretrained": True,
+    }
+    POSITION_EMBEDDING =  "sine"
+
+    
     ###############
     # Transformer #
     ###############
@@ -60,11 +70,10 @@ class Config():
     # Template Encoder #
     ####################
     TEMPLATE_ENCODER = {
-        "NAME": "vits16",
-        "LR" : 2e-6,#, ###,
-        "PRETRAINED" : True,
-        "USE_CHECKPOINTING" : False,
-        "SAME_AS_BACKBONE" : False,
+        "name": "vits16",
+        "pretrained" : True,
+        "lr" : 2e-6,
+        "use_checkpointing" : False,
     }
     
     # DN-DETR

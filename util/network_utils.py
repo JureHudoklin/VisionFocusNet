@@ -15,7 +15,7 @@ def write_summary(writer, stats_dict, epoch, split):
     for k, v in stats_dict.items():
         writer.add_scalar(f"{split}/{k}", v, epoch)
     
-def save_model(model, optimizer, epoch, save_dir, name = None):
+def save_model(model, optimizer, epoch, step, save_dir, name = None):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
         print(f"Created directory: {save_dir}")
@@ -23,29 +23,35 @@ def save_model(model, optimizer, epoch, save_dir, name = None):
         name = epoch
     torch.save({
         "epoch": epoch,
+        "step": step,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-    }, os.path.join(save_dir, f"epoch_{name}.pth"))
+    }, os.path.join(save_dir, f"epoch_{step}_{name}.pth"))
 
-def load_model(model, optimizer, load_dir, device, epoch=None):
-    if epoch is None:
-        files = [f.split("_")[1].split(".")[0] for f in os.listdir(load_dir) if f.endswith(".pth")]
-        ep_num = []
-        ep_inter = []
-        for ep in files:
-            if ep.isdigit():
-                ep_num.append(int(ep))
-            else:
-                ep_inter.append(ep)
-        epoch = max(ep_num) if len(ep_num) > 0 else ep_inter[0]
+def load_model(file_name, model, optimizer, load_dir, device):
+    if file_name is None:
+        print("No file name provided, loading latest model")
+        files = [f.split("_")[-1].split(".")[0] for f in os.listdir(load_dir) if f.endswith(".pth")]
+        # Prompts user to select a file if there are multiple
+        if len(files) > 1:
+            print("Multiple files found, please select one:")
+            for i, f in enumerate(files):
+                print(f"{i}: {f}")
+            file_name = files[int(input("File: "))]
         
-    print(f"Loading model from epoch: {epoch}")
-    checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    if optimizer is not None:
+    print(f"Loading model: {file_name}")
+    checkpoint = torch.load(os.path.join(load_dir, f"{file_name}.pth"), map_location=device)
+    try:
+        model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    except:
+        missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        print(f"Missing keys: {missing_keys}", f"Unexpected keys: {unexpected_keys}", sep = "\n")
+        print("Loading model without optimizer")
+        
     epoch = checkpoint["epoch"]
-    return model, optimizer, epoch
+    step = checkpoint["step"]
+    return model, optimizer, epoch, step
 
 def partial_load_model(model, optimizer, load_dir, device, epoch = None):
     if epoch is None:
@@ -150,7 +156,7 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
     return fig    
     
 @torch.no_grad()
-def display_head_maps(hm, hm_gt, samples):
+def display_heat_maps(hm, hm_gt, samples):
     # Convert HM to RGB
     hm = hm.repeat(1, 3, 1, 1) # b, 3, h, w
     hm = hm*torch.tensor([250, 0, 0]).view(1, 3, 1, 1).to(hm.device)
@@ -175,10 +181,13 @@ def display_head_maps(hm, hm_gt, samples):
                      axes_pad=0.05,  # pad between axes in inch.
                      )
     
-    step = batch+epoch*len(data_loader)
-    writer.add_images("heat_map", hm_sum, step, dataformats="NCHW")
+    for i in range(bs):
+        ax = grid[i]
+        ax.imshow(scene_img[i].permute(1, 2, 0).cpu().numpy())
+        ax.axis("off")
+
+    # Set padding between subplots
+    plt.subplots_adjust(wspace=1, hspace=1)
     
-    if evaluate_fn is not None:
-        evaluate_fn(epoch = batch+epoch*len(data_loader))
-        model.train()
-        criterion.train()
+    return fig
+    

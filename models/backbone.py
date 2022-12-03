@@ -216,8 +216,9 @@ def build_backbone_custom(args):
         resnet backbone with frozen BatchNorm.
     """
     position_embedding = build_position_encoding(args)
-    train_backbone = args.LR_BACKBONE > 0
-    return_interm_layers = args.RETURN_INTERM_LAYERS
+    bb_args = args.BACKBONE
+    train_backbone = bb_args["lr"] > 0
+    return_interm_layers = bb_args["return_intermediate_layers"]
     backbone = ResNet50_custom()
     model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.num_channels
@@ -241,9 +242,10 @@ def build_backbone(args):
         resnet backbone with frozen BatchNorm.
     """
     position_embedding = build_position_encoding(args)
-    train_backbone = args.LR_BACKBONE > 0
-    return_interm_layers = args.RETURN_INTERM_LAYERS
-    backbone = Backbone(args.BACKBONE, train_backbone, return_interm_layers, args.DILATION)
+    bb_args = args.BACKBONE
+    train_backbone = bb_args["lr"] > 0
+    return_interm_layers = bb_args["return_intermediate_layers"]
+    backbone = Backbone(bb_args["name"], train_backbone, return_interm_layers, bb_args["dilation"])
     model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.num_channels
     return model

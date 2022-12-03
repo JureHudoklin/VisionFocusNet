@@ -1,22 +1,18 @@
 
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 """
-Misc functions, including distributed helpers.
-Mostly copy-paste from torchvision references.
+Misc functions.
+Some functions are copy-paste from torchvision references.
 """
 
+import os
+import time
 from collections import defaultdict, deque
-
-from typing import Optional, List
+from typing import List, Optional
 
 import torch
-import time
+import torchvision
 from torch import Tensor, nn
 from torchvision.ops import box_convert
-
-
-# needed due to empty tensor bug in pytorch and torchvision 0.5
-import torchvision
 
 
 class NestedTensor(object):
@@ -134,7 +130,12 @@ def get_ETA(start_time, current_iter, total_iter):
 
     return ETA, ETA_str
 
-
+def create_directory_structure(path):
+    directories = ["logs", "weights", "images"]
+    for directory in directories:
+        if not os.path.exists(os.path.join(path, directory)):
+            os.makedirs(os.path.join(path, directory))
+            
 
 
 
