@@ -13,52 +13,45 @@ from torchvision.datasets import coco
 from util.statistics import StatsTracker
 from util.network_utils import display_model_outputs, write_summary, save_model
 from util.data_utils import make_dummy_input
+from util.misc import get_ETA
 from data_generator.coco_eval import CocoEvaluator
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
 
 def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, save_dir, cfg,
+                    step = 0,
                     max_norm: float = 0.1,
                     evaluate_fn = None,):
     model.train()
     criterion.train()
     stats_tracker = StatsTracker()
     batch = 1
+    bs = cfg.BATCH_SIZE
     total_batches = len(data_loader)
     start_time = time.time()
     
-    # --- Do a dry run to reserve the buffers ---
-    #dry_run(cfg, model, criterion, optimizer)
     
     for data in data_loader: #samples, tgt_imgs, targets
         if batch == 1:
             # --- Do a dry run to reserve the buffers ---
-            #dry_run(cfg, model, criterion, optimizer)
+            dry_run(cfg, model, criterion, optimizer)
             print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
         else:            
-            #stats_tracker.update(loss_dict, stats_dict)
             
             # print statistics
             if batch % 10 == 0:
-                ETA = (time.time() - start_time) * (total_batches-batch) / batch
-                ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
+                ETA = get_ETA(start_time, batch, total_batches)   
                 description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
                 print(description, )
                 
-                
-                              
-                
-        
             if batch % 100 == 0:
                 stats = stats_tracker.get_stats_current()
                 merged = {**stats[0], **stats[1]}
-                step = batch+epoch*len(data_loader)
                 write_summary(writer, merged, step, f"running_stats")
             
             if batch % 1000 == 0:
                 fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-                fig.savefig(os.path.join(save_dir, f"{epoch}_{batch}.png"))
-                writer.add_figure("traing/img", fig, batch+epoch*total_batches)
+                writer.add_figure("traing/img", fig, step)
                 plt.close(fig)
                 
                 # Display heatmaps
@@ -94,6 +87,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
                 plt.close(fig)
                     
         batch += 1
+        step += bs
         
         samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
         #with torch.autograd.set_detect_anomaly(True):
