@@ -168,11 +168,11 @@ class DETR(nn.Module):
             # --- Get Lin Proj ---
             input_proj = self.input_proj[i]
             feat_r, mask = features[i].decompose()
-            feat = input_proj(feat_r)
+            feat = input_proj(feat_r) # B, C, H, W
             feat_shapes.append(feat.shape)
             feat_list_raw.append(input_proj(feat_r.detach()))
             features[i] = NestedTensor(feat, mask)
-
+            
             feat_sub_all = []
             feat_core_all = []
             feat_sim_all = []
@@ -190,7 +190,7 @@ class DETR(nn.Module):
             feat_core_all = torch.stack(feat_core_all, dim=1)
             feat_sim_all = torch.stack(feat_sim_all, dim=1)
             
-            feat_corelated = torch.cat([feat_sub_all, feat_core_all, feat_sim_all], dim=2)
+            feat_corelated = torch.cat([feat_sub_all, feat_core_all, feat_sim_all], dim=2) # [B, num_tgts, 2C+8, H, W]
             hm = self.hm_conv(feat_corelated.view(bs*num_tgts, -1, feat_corelated.shape[-2], feat_corelated.shape[-1]))
             hm = hm.view(bs, num_tgts, 1, feat_corelated.shape[-2], feat_corelated.shape[-1])
             top_tgt = torch.argmax(hm, dim=1, keepdim=True) # [B, 1, 1, H, W]
@@ -199,13 +199,7 @@ class DETR(nn.Module):
             out["hm_cc"] = hm_top
             
             feat_ = feat_corelated.gather(1, top_tgt.repeat(1, 1, feat_corelated.shape[2], 1, 1)) # [B, 1, C, H, W]
-            feat_ = feat_.squeeze(1)
-
-            # feat_sub_all = torch.sum(feat_sub_all, dim=1) / num_tgts
-            # feat_core_all = torch.sum(feat_core_all, dim=1) / num_tgts
-            # feat_sim_all = torch.sum(feat_sim_all, dim=1) / num_tgts
-
-            #feat_ = torch.cat([feat_sub_all, feat_core_all, feat_sim_all], dim=1) # [B, 4C, H, W]
+            feat_ = feat_.squeeze(1) # [B, C, H, W]
 
             feat_ = self.feat_all_conv(feat_)
             feat_ = self.feat_all_norm(feat_.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
@@ -228,11 +222,7 @@ class DETR(nn.Module):
             out_obj_enc = self.contrastive_projection(self.template_proj(obj_encs))
             out_obj_enc = out_obj_enc / out_obj_enc.norm(dim=-1, keepdim=True)
             out["features"] = out_feat
-            out["mask"] = mask_list
             out["obj_encs"] = out_obj_enc
-
-            if self.train_method == "contrastive_only":
-                return out
 
         ###############
         # Transformer #

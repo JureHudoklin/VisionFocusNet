@@ -194,7 +194,7 @@ class Transformer(nn.Module):
         mask_flat = torch.cat(mask_flat, 1) # [B, HW]
         feat_sizes = torch.as_tensor(feat_sizes, dtype=torch.int64, device=feat_flat.device) # [L, 2]
         mask_sizes = torch.stack(mask_sizes, dim=1) # [B, L, 2]
-        level_start_index = torch.cat((feat_sizes.new_zeros((1, )), feat_sizes.prod(1).cumsum(0)[:-1])) # 
+        level_start_index = torch.cat((feat_sizes.new_zeros((1, )), feat_sizes.prod(1).cumsum(0)[:-1])) #  [L]
         
         valid_ratios = self.get_valid_ratio(feat_sizes, mask_sizes) # B, L, 2
                 
@@ -215,8 +215,21 @@ class Transformer(nn.Module):
         ################  
         ### Heat Map ###
         ################
+        hm_feat = self.centerness_embed(self.enc_output_norm(self.enc_output(memory))) # B, HW, 1
+        for lvl, (H_, W_) in enumerate(feat_sizes):
+            h_, w_ = mask_sizes[:, lvl, 0], mask_sizes[:, lvl, 1] # B
+            lvl_start_idx = level_start_index[lvl]
+            
+            mask = ~mask_flat[:, lvl_start_idx:lvl_start_idx + H_ * W_]
+            lvl_feat = hm_feat[:, lvl_start_idx:lvl_start_idx + H_ * W_, :] # B, HW, C
+            
+            heat_map = lvl_feat.masked_fill(mask.unsqueeze(-1), float(-1e8)) # B, HW, C
+            
+            lvl_feat = lvl_feat.view(-1, H_, W_, self.d_model) # B, H, W, C
+            
+            
         num_layers, bs = memories.shape[:2]
-        h, w = feat_sizes[-1]
+        h, w = feat_sizes[i]
         memories_hw = memories.reshape(num_layers, bs, h, w, -1)
         memories_hw = self.enc_output_norm(self.enc_output(memories_hw))
         heat_maps = self.centerness_embed(memories_hw) # [num_layers, B, H, W, 1] 
