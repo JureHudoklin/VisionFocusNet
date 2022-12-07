@@ -78,7 +78,7 @@ class Transformer(nn.Module):
         #if two_stage:
         self.enc_output = nn.Linear(d_model, d_model)
         self.enc_output_norm = nn.LayerNorm(d_model)
-        self.delta_bbox_xy = nn.Linear(d_model, 2)
+        self.delta_bbox_xy = nn.Linear(d_model, 4)
         self.centerness_embed = nn.Sequential(
             nn.Linear(d_model, 1),
         )
@@ -100,38 +100,6 @@ class Transformer(nn.Module):
         nn.init.constant_(self.decoder.bbox_embed.layers[-1].bias.data, 0)
         
         
-    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
-        N_, S_, C_ = memory.shape
-        base_scale = 4.0
-        proposals = []
-        _cur = 0
-        for lvl, (H_, W_) in enumerate(spatial_shapes):
-            mask_flatten_ = memory_padding_mask[:, _cur:(_cur + H_ * W_)].view(N_, H_, W_, 1)
-            valid_H = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
-            valid_W = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
-
-            grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
-                                            torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
-            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
-
-            scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
-            grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
-            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
-            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
-            proposals.append(proposal)
-            _cur += (H_ * W_)
-        output_proposals = torch.cat(proposals, 1) # N, S, 4
-        output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
-        output_proposals =  torch.log(output_proposals / (1 - output_proposals)) 
-        output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float('inf'))
-        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float('inf'))
-
-        output_memory = memory
-        output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
-        output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
-        output_memory = self.enc_output_norm(self.enc_output(output_memory))
-        return output_memory, output_proposals
-
     def get_valid_ratio(self, feat_sizes, mask_sizes):
         """ Get ratio between the feature map size and masked image size. (ratio < 1.0))
         ----------
@@ -212,89 +180,56 @@ class Transformer(nn.Module):
         topk = self.num_queries
         memory = memories[-1].clone()
         
+        num_layers, B, _, _ = memories.shape
         ################  
         ### Heat Map ###
         ################
-        hm_feat = self.centerness_embed(self.enc_output_norm(self.enc_output(memory))) # B, HW, 1
-        for lvl, (H_, W_) in enumerate(feat_sizes):
-            h_, w_ = mask_sizes[:, lvl, 0], mask_sizes[:, lvl, 1] # B
-            lvl_start_idx = level_start_index[lvl]
-            
-            mask = ~mask_flat[:, lvl_start_idx:lvl_start_idx + H_ * W_]
-            lvl_feat = hm_feat[:, lvl_start_idx:lvl_start_idx + H_ * W_, :] # B, HW, C
-            
-            heat_map = lvl_feat.masked_fill(mask.unsqueeze(-1), float(-1e8)) # B, HW, C
-            
-            lvl_feat = lvl_feat.view(-1, H_, W_, self.d_model) # B, H, W, C
-            
-            
-        num_layers, bs = memories.shape[:2]
-        h, w = feat_sizes[i]
-        memories_hw = memories.reshape(num_layers, bs, h, w, -1)
-        memories_hw = self.enc_output_norm(self.enc_output(memories_hw))
-        heat_maps = self.centerness_embed(memories_hw) # [num_layers, B, H, W, 1] 
-
-        masks = ~src_mask[-1].view(1, bs, h, w).repeat(num_layers, 1, 1, 1) # [num_layers, B, H, W]
-
-        heat_maps = heat_maps.masked_fill(~masks.unsqueeze(-1), float(-1e8))
-
-        ### Select BBOX ###
-        bbox_wh = self.delta_bbox_xy(memories_hw) # [num_layers, B, H, W, 2]
-        valid_H = masks[:, :, :, 0].sum(-1) # [num_layers, B]
-        valid_W = masks[:, :, 0, :].sum(-1) # [num_layers, B]
+        hm_feat = self.centerness_embed(self.enc_output_norm(self.enc_output(memories))) #num_layers, B, HW, 1
+        hm_feat = hm_feat.masked_fill(~mask_flat.unsqueeze(0).unsqueeze(-1), float(-1e8)) # num_layers, B, HW, 1
         
-        grid_y, grid_x = torch.meshgrid(torch.linspace(0, h - 1, h, dtype=torch.float32, device=memory.device),
-                                        torch.linspace(0, w - 1, w, dtype=torch.float32, device=memory.device))
-        centers = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # [H, W, 2]
-
-        scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1) # [num_layers, B, 2]
-        centers = centers.view(1, 1, h, w, 2).repeat(num_layers, bs, 1, 1, 1) # [num_layers, B, H, W, 2]
-        centers = (centers+0.5) / scale.view(num_layers, bs, 1, 1, 2) # [num_layers, B, H, W, 2]
-        centers = inverse_sigmoid(centers) # [num_layers, B, H, W, 2]
+        heat_maps_dict = {"hm_feat": hm_feat, "mask_sizes": mask_sizes, "feat_sizes": feat_sizes}
         
-        bbox_proposals = torch.cat([centers, bbox_wh], -1) # [num_layers, B, H, W, 4]
-        #print(bbox_proposals[0, 0, 0, 0, :])
-        
-        top_k_heat, top_k_idx = torch.topk(heat_maps.view(num_layers, bs, -1), topk, dim=-1) # [num_layers, B, topk]
-        top_k_idx = top_k_idx.unsqueeze(-1).repeat(1, 1, 1, 4) # [num_layers, B, topk, 4]
-        top_k_bbox = torch.gather(bbox_proposals.view(num_layers, bs, -1, 4), 2, top_k_idx) # [num_layers, B, topk, 4] 
-        #print("heat", top_k_heat[0, 0, :10])
-        #print("bbox", top_k_bbox[0, 0, :10, :])
-        
-        #tgt_point_embed[-topk:, :, :] = top_k_bbox[-1].permute(1, 0, 2) # [B, topk, 4]
-        
-        ### For each memory perform 1: Bounding Box Proposals, 2: Contrastive loss ###
+        top_k_bbox = None
         if self.two_stage:
-            #(grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
-            output_memory, output_proposals = self.gen_encoder_output_proposals(memories[-1].detach(), mask_flat, feat_sizes)
+            hm_last = hm_feat[-1].clone()
+            mem_last = memories[-1].clone() #
+            bbox_prop = []
+            for lvl, (H_, W_) in enumerate(feat_sizes):
+                h_, w_ = mask_sizes[:, lvl, 0], mask_sizes[:, lvl, 1] # B
+                lvl_start_idx = level_start_index[lvl]
 
-            # hack implementation for two-stage Deformable DETR
-            enc_outputs_centerness = self.centerness(output_memory).sigmoid() # (B, HW, 1) #.detach()
-            enc_outputs_coord_unact = self.delta_bbox(output_memory) + output_proposals
+                heat_map = heat_map.view(-1, H_, W_, 1) # B, H, W, 1
+                mem = mem_last[:, lvl_start_idx:lvl_start_idx + h_ * w_, :] # B, HW, C
+                mem = mem.view(-1, H_, W_, self.embed_dim) # B, H, W, C
+                
+                bbox_wh = self.delta_bbox_xy(mem) # [B, H, W, 4]
+            
+                grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
+                                        torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
+                centers = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # [H, W, 2]
+                scale = torch.stack([h_, w_], -1) # [B, 2]
+                centers = centers.view(1, H_, W_, 2).repeat(B, 1, 1, 1) # [B, H, W, 2]
+                centers = (centers + 0.5) / scale.view(B, 1, 1, 2) # [B, H, W, 2]
+                centers = inverse_sigmoid(centers) # [B, H, W, 2]
 
-            topk = self.num_queries
-            topk_proposals = torch.topk(enc_outputs_centerness.sum(-1).flatten(1).detach(), topk, dim=1)[1]
+                wh_zero = torch.zeros_like(centers)
+                bbox_proposals = torch.cat([centers, wh_zero], -1) # [B, H, W, 4]
+                
+                bbox_proposals = bbox_proposals + bbox_wh # [B, H, W, 4]
+                bbox_prop.append(bbox_proposals.view(B, -1, 4)) # [B, HW, 4]
+                
+            bbox_prop = torch.cat(bbox_prop, 1) # [B, HW, 4]
+                
+            top_k_heat, top_k_idx = torch.topk(hm_last.view(B, -1), topk, dim=-1) # [B, topk]
+            top_k_idx = top_k_idx.unsqueeze(-1).repeat(1, 1, 4) # [B, topk, 4]
+            top_k_bbox = torch.gather(bbox_prop, 1, top_k_idx) # [B, topk, 4]
             
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)) # (B, topk, 4)
-            topk_coords_prop = torch.gather(output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
-            topk_centerness = torch.gather(enc_outputs_centerness, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 2)) # (B, topk, 1)
-            
-            #tgt_point_embed[-topk:, :, :] = topk_coords_unact.detach().permute(1, 0, 2)
-            
-            two_stage_proposals = [output_proposals.sigmoid(), topk_coords_prop.sigmoid(), topk_coords_unact.sigmoid()]
-            two_stage_centerness = [enc_outputs_centerness, topk_centerness]
-            #enc_outputs_centerness#torch.gather(enc_outputs_centerness, 1, topk_proposals.unsqueeze(-1)) # (B, topk, 1)
-        else:
-            two_stage_proposals = None
-            two_stage_centerness = None
-           
-           
+            tgt_point_embed[-topk:, :, :] = top_k_bbox.permute(1, 0, 2).contiguous() # [topk, B, 4]
         
-
+        
         ###############
         ### Decoder ###
         ###############
-        memory = memories[-1] # B, HW, C
         memory = memory.permute(1, 0, 2) # HW, B, C
         mem_key_padd_mask = mask_flat # B, HW
         pos = pos_flat.permute(1, 0, 2) # HW, B, C
@@ -302,7 +237,7 @@ class Transformer(nn.Module):
         ca, se, references = self.decoder(tgt_label_embed, memory, tgts, memory_key_padding_mask=mem_key_padd_mask,
                           pos=pos, reference_unsigmoid=tgt_point_embed, tgt_mask = tgt_attn_mask)
         
-        return ca, se, references, memories, top_k_bbox, heat_maps
+        return ca, se, references, memories, top_k_bbox, heat_maps_dict
 
 
 class DeformableTransformerEncoderLayer(nn.Module):

@@ -14,20 +14,15 @@ import torch.multiprocessing
 from pycocotools.coco import COCO
 torch.multiprocessing.set_sharing_strategy('file_system')
 from torchsummary import summary
-from glob import glob
 from functools import partial
 from torch.utils.tensorboard import SummaryWriter
 
 from engine import train_one_epoch, evaluate
-from util.network_utils import load_model, partial_load_model, save_model, write_summary
+from util.network_utils import load_model, save_model, write_summary
 from util.misc import create_directory_structure
 from configs.vision_focusnet_config import Config
 from models.detr_deform import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
-from data_generator.AVD import get_avd_data_generator, build_AVD_dataset
-from data_generator.GMU_kitchens import get_gmu_data_generator, build_GMU_dataset
-from data_generator.Objects365 import get_365_data_generator
-from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
 from data_generator.mixed_generator import get_concat_dataset
         
 
@@ -100,16 +95,17 @@ def main(args):
 
     ######### GET DATASET #########
     # COCO
-    #train_data_loader, test_data_loader = get_coco_data_generator(cfg)
+    train_data_loader, test_data_loader = get_coco_data_generator(cfg)
     # MIX
-    train_data_loader, test_data_loaders = get_concat_dataset(cfg)
+    #train_data_loader, test_data_loaders = get_concat_dataset(cfg)
     # Concat
     
     # Get COCO GT for evaluation
-    val_base_dirs =cfg.TEST_DATASETS
-    coco_ds = []
-    for val_base_dir in val_base_dirs:
-        coco_ds.append(COCO(val_base_dir))    
+    # val_base_dirs =cfg.TEST_DATASETS
+    # coco_ds = []
+    # for val_base_dir in val_base_dirs:
+    #     coco_ds.append(COCO(val_base_dir))
+    coco_ds = None
     
     #########################################################
     ##############    TRAINING / EVALUATION   ###############
@@ -118,7 +114,7 @@ def main(args):
                                model=model,
                                criterion=criterion,
                                postprocessor=postprocessor,
-                               data_loaders = test_data_loaders,
+                               data_loaders = [test_data_loader],
                                coco_ds = coco_ds,
                                writer=writer,
                                save_dir=save_dir,

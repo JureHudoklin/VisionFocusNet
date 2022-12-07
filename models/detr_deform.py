@@ -37,6 +37,7 @@ class DETR(nn.Module):
                  d_model,
                  aux_loss,
                  num_levels,
+                 use_checkpointing = True,
                  two_stage = False,
                  dn_args: dict = None,
                  contrastive_loss = True,
@@ -56,6 +57,7 @@ class DETR(nn.Module):
         self.d_model = d_model
         self.num_levels = num_levels
         self.aux_loss = aux_loss
+        self.use_checkpointing = use_checkpointing
         self.two_stage = two_stage
         self.contrastive_loss = contrastive_loss
         self.centeredness_loss = centeredness_loss
@@ -162,6 +164,7 @@ class DETR(nn.Module):
         feat_list = []
         feat_list_raw = []
         mask_list = []
+        hm_cc_list = []
 
         feat_shapes = []
         for i in range(self.num_levels):
@@ -196,7 +199,7 @@ class DETR(nn.Module):
             top_tgt = torch.argmax(hm, dim=1, keepdim=True) # [B, 1, 1, H, W]
             hm_top = hm.gather(1, top_tgt).squeeze(1) # [B, 1, H, W]
             
-            out["hm_cc"] = hm_top
+            hm_cc_list.append(hm_top)
             
             feat_ = feat_corelated.gather(1, top_tgt.repeat(1, 1, feat_corelated.shape[2], 1, 1)) # [B, 1, C, H, W]
             feat_ = feat_.squeeze(1) # [B, C, H, W]
@@ -207,12 +210,12 @@ class DETR(nn.Module):
             feat_list.append(feat_)
             mask_list.append(mask)
 
-
+        
         out["mask"] = mask_list
         ################################
         # Prepare for contrastive loss #
         ################################
-        if self.train_method == 'contrastive' or self.train_method == 'both':
+        if self.contrastive_loss:
             out_feat = []
             for feat in feat_list_raw:
                 feat_ = self.contrastive_projection(feat.permute(0, 2, 3, 1)) # [B, H, W, C*4]
@@ -240,7 +243,7 @@ class DETR(nn.Module):
                            self.d_model,
             )
 
-        ca, sa, reference_pts_layers, out_mem, out_prop, out_centerness = self.transformer(src = feat_list,
+        ca, sa, reference_pts_layers, out_mem, out_prop, heat_map_dict = self.transformer(src = feat_list,
                                                     src_pos_embed = pos,
                                                     src_mask = mask_list,
                                                     tgt_point_embed = input_query_bbox,
@@ -249,14 +252,13 @@ class DETR(nn.Module):
                                                     tgts = obj_enc,
                                                     ) # hs: [num_layers, bs, num_queries, hidden_dim], reference_pts_layers: [num_layers, bs, num_queries, 4]
 
-        ###################
-        # Centerness Loss #
-        ###################
-        # h, w = feat_shapes[-1][2:]
-        # out_mem = torch.stack(out_mem, dim=1).view(bs, 6, h, w, self.d_model) # [B, 6, H, W, C]
-        # out_centerness = self.centerness_embed(out_mem).permute(0, 1, 4, 2, 3) # [B, 6, 1, H, W]
-        # out["centerness"] = out_centerness
-        out["heat_maps"] = out_centerness
+
+        #####################
+        # Centeredness Loss #
+        #####################
+        if self.centeredness_loss:
+            heat_map_dict["hm_cc"] = hm_cc_list
+        out["heat_maps_dict"] = heat_map_dict
 
         ###########
         # Outputs #
@@ -280,10 +282,6 @@ class DETR(nn.Module):
                "matching_boxes": outputs_coord[-2],
                "mask_dict": mask_dict}
         )
-
-
-        if self.two_stage:
-            out["two_stage"] = {"ref_point_prop": out_prop, "centerness": out_centerness}
 
         if self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss(outputs_class, output_sim, outputs_coord)
@@ -313,10 +311,9 @@ class SetCriterion(nn.Module):
                  focal_alpha,
                  batch_size,
                  losses,
-                 train_method,
                  two_stage,
-                 use_contrastive_loss = None,
-                 use_centeredness_args = None,
+                 use_contrastive_loss = True,
+                 use_centeredness_args = True,
                  base_loss = False,
                  base_loss_levels = 0):
         """ Create the criterion.
@@ -337,7 +334,6 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.stats = {}
         self.bs = batch_size
-        self.train_method = train_method
         self.two_stage = two_stage
         
         self.use_contrastive_loss = use_contrastive_loss
@@ -394,7 +390,7 @@ class SetCriterion(nn.Module):
                                         dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
             target_classes[idx] = target_classes_o # [bs, q]
 
-            loss_ce = 0
+            loss_ce = torch.tensor(0.0, device=outputs_logits.device)
             for b in range(bs):
                 sim_labels = targets[b][f"{prefix}labels"] # [q]
                 sim_labels_2dn = torch.zeros_like(sim_labels).repeat(self.base_loss_levels) # [q*base_loss_levels]
@@ -482,7 +478,7 @@ class SetCriterion(nn.Module):
                                         dtype=torch.int64, device=outputs_logits.device) # [bs, q] Where all classes point to the no-object class
             target_classes[idx] = target_classes_o # [bs, q]
 
-            loss_sim = 0
+            loss_sim = torch.tensor(0.0, device=outputs_logits.device)
             for b in range(bs):
                 sim_labels = targets[b][f"{prefix}sim_labels"] # [q]
                 sim_labels_2dn = torch.zeros_like(sim_labels).repeat(self.base_loss_levels) # [q*base_loss_levels]
@@ -689,36 +685,47 @@ class SetCriterion(nn.Module):
         return loss, stats
     
     def loss_centeredness(self, outputs, targets, log=True, *args, **kwargs):
-        hm_target, hm_weights, hm_mask = self.get_heat_map_gt(outputs, targets)
-            
-        hm_cc = outputs["hm_cc"] # [B, 1, H, W]
-        hm_encoder = outputs["heat_maps"][-1] # [B, 1, H, W]
-        bs, _, h, w = hm_cc.shape
-
-        # Compute the centerness loss- focal loss
-        l_cen = F.binary_cross_entropy_with_logits(hm_cc.reshape(bs, -1),
-                                        hm_target.reshape(bs, -1),
-                                        weight=hm_weights.reshape(bs, -1),
-                                        reduction="none") #[B, HW]
-        l_cen = l_cen.sum(dim=1) / (hm_mask.view(bs, -1).sum(dim=-1) + 1)
-        l_cen = l_cen.mean()
+        hm_targets, hm_weights, hm_masks = self.get_heat_map_gt(outputs, targets)
         
-        l_enc = F.binary_cross_entropy_with_logits(hm_encoder.reshape(bs, -1),
-                                        hm_target.reshape(bs, -1),
-                                        weight=hm_weights.reshape(bs, -1),
-                                        reduction="none")
-        l_enc = l_enc.sum(dim=1) / (hm_mask.view(bs, -1).sum(dim=-1) + 1)
+        heat_maps_dict = outputs["heat_maps_dict"]
+        hm_cc = heat_maps_dict["hm_cc"] # list[B, 1, H, W]
+        hm_feat = heat_maps_dict["hm_feat"][-1] # #num_layers, B, HW, 1
+        mask_sizes = heat_maps_dict["mask_sizes"] # [B, lvl, 2]
+        feat_sizes = heat_maps_dict["feat_sizes"] # [lvl, 2]
+        
+        num_lvls = len(hm_cc)
+        bs = hm_cc[0].shape[0]
+        
+        hm_cc = [it.view(bs, -1) for it in hm_cc] # [B, HW]
+        hm_cc = torch.cat(hm_cc, dim=1) # [B, HW]
+        
+        print(hm_cc.shape)
+        l_cen = F.binary_cross_entropy_with_logits(hm_cc,
+                                        hm_targets,
+                                        weight=hm_weights,
+                                        reduction="none") #[B, HW]
+        l_cen = l_cen.sum(dim=1) / (hm_masks.sum(dim=-1) + 1)
+        l_cen = l_cen.mean()
+        print(l_cen)
+        
+        l_enc = F.binary_cross_entropy_with_logits(hm_feat.reshape(bs, -1),
+                                        hm_targets,
+                                        weight=hm_weights,
+                                        reduction="none") #[B, HW]
+        l_enc = l_enc.sum(dim=1) / (hm_masks.sum(dim=-1) + 1)
         l_enc = l_enc.mean()
+        
         loss = l_cen + l_enc
+        #print(loss)
         
         losses = {}
         stats = {}
-        losses["loss_centerness"] = loss
+        losses["centeredness_loss"] = loss
         
         if log:
-            stats["loss_centerness"] = loss.detach()
-            stats["heat_map"] = hm_encoder.sigmoid().detach()
-            stats["heat_map_gt"] = hm_mask.detach()
+            stats["centeredness_loss"] = loss.detach()
+            #stats["heat_map"] = hm_encoder.sigmoid().detach()
+            #stats["heat_map_gt"] = hm_mask.detach()
         return losses, stats
     
     @torch.no_grad()
@@ -726,54 +733,66 @@ class SetCriterion(nn.Module):
         """
         Create a heat map for the ground truth boxes
         """
-        hm = outputs["hm_cc"] # [B, 1, H, W]
-        mask = outputs["mask"][-1] # [B, H, W]
+        heat_maps_dict = outputs["heat_maps_dict"]
+        hm_lvls = heat_maps_dict["hm_cc"] # list[B, 1, H, W]
+        mask_lvls = outputs["mask"] # list[B, H, W]
         
-        bs, _, h, w = hm.shape
+        hm_targets = []
+        hm_weights = []
+        hm_masks = []
+        
+        for lvl in range(len(hm_lvls)):
+            hm = hm_lvls[lvl]
+            mask = mask_lvls[lvl]
+            bs, _, h, w = hm.shape
     
-        hm_target = torch.zeros_like(hm)
-        hm_weights = torch.zeros_like(hm_target)
-        hm_mask = torch.zeros_like(hm_target)
-        for i, tgt in enumerate(targets):
-            bbox = tgt["base_boxes"].clone() # [N, 4]
-            labels = tgt["base_labels"].clone() # [N]
-            
-            bbox_areas = bbox[:, 2] * bbox[:, 3]
-            weights = torch.exp(-10*bbox_areas) # [N]
+            hm_target = torch.zeros_like(hm)
+            hm_weight = torch.zeros_like(hm_target)
+            hm_mask = torch.zeros_like(hm_target)
+            for i, tgt in enumerate(targets):
+                bbox = tgt["base_boxes"].clone() # [N, 4]
+                labels = tgt["base_labels"].clone() # [N]
+                
+                bbox_areas = bbox[:, 2] * bbox[:, 3]
+                weights = torch.exp(-10*bbox_areas) # [N]
 
-            ## Reduce bboxes to 75% of original size
-            bbox[:, 2:] = bbox[:, 2:] * box_scale
+                ## Reduce bboxes to 75% of original size
+                bbox[:, 2:] = bbox[:, 2:] * box_scale
 
-            bbox_pos = bbox[labels == 1] # [N, 4]
-            bbox_neg = bbox[labels == 0] # [N, 4]
-            
-            weights_pos = weights[labels == 1] # [N]
-            weights_neg = weights[labels == 0] # [N]
-            
-            bbox_pos = box_ops.box_cxcywh_to_xyxy(bbox_pos)
-            bbox_neg = box_ops.box_cxcywh_to_xyxy(bbox_neg)
-            
-            valid_w = (~mask[i, 0, :]).sum(dim=0)
-            valid_h = (~mask[i, :, 0]).sum(dim=0)
+                bbox_pos = bbox[labels == 1] # [N, 4]
+                bbox_neg = bbox[labels == 0] # [N, 4]
+                
+                weights_pos = weights[labels == 1] # [N]
+                weights_neg = weights[labels == 0] # [N]
+                
+                bbox_pos = box_ops.box_cxcywh_to_xyxy(bbox_pos)
+                bbox_neg = box_ops.box_cxcywh_to_xyxy(bbox_neg)
+                
+                valid_w = (~mask[i, 0, :]).sum(dim=0)
+                valid_h = (~mask[i, :, 0]).sum(dim=0)
 
-            bbox_pos = bbox_pos * torch.tensor([valid_w, valid_h, valid_w, valid_h], device=bbox_pos.device)
-            bbox_neg = bbox_neg * torch.tensor([valid_w, valid_h, valid_w, valid_h], device=bbox_neg.device)
+                bbox_pos = bbox_pos * torch.tensor([valid_w, valid_h, valid_w, valid_h], device=bbox_pos.device)
+                bbox_neg = bbox_neg * torch.tensor([valid_w, valid_h, valid_w, valid_h], device=bbox_neg.device)
 
-            bbox_pos = bbox_pos.long()
-            bbox_neg = bbox_neg.long()
+                bbox_pos = bbox_pos.long()
+                bbox_neg = bbox_neg.long()
 
-            # Set the center of the bbox to 1
-            for j in range(len(bbox_pos)):
-                weight = weights_pos[j]
-                hm_target[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
-                hm_weights[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = weight # B, 1, H, W
-                hm_mask[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
-            for j in range(len(bbox_neg)):
-                weight = weights_neg[j]
-                hm_weights[i, 0, bbox_neg[j, 1]:bbox_neg[j, 3], bbox_neg[j, 0]:bbox_neg[j, 2]] = weight
-                hm_mask[i, 0, bbox_neg[j, 1]:bbox_neg[j, 3], bbox_neg[j, 0]:bbox_neg[j, 2]] = 1
+                # Set the center of the bbox to 1
+                for j in range(len(bbox_pos)):
+                    weight = weights_pos[j]
+                    hm_target[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
+                    hm_weight[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = weight # B, 1, H, W
+                    hm_mask[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
+                for j in range(len(bbox_neg)):
+                    weight = weights_neg[j]
+                    hm_weight[i, 0, bbox_neg[j, 1]:bbox_neg[j, 3], bbox_neg[j, 0]:bbox_neg[j, 2]] = weight
+                    hm_mask[i, 0, bbox_neg[j, 1]:bbox_neg[j, 3], bbox_neg[j, 0]:bbox_neg[j, 2]] = 1
 
-        return hm_target, hm_weights, hm_mask
+            hm_targets.append(hm_target.reshape(bs, -1))
+            hm_weights.append(hm_weight.reshape(bs, -1))
+            hm_masks.append(hm_mask.reshape(bs, -1))
+
+        return torch.cat(hm_targets, dim=1), torch.cat(hm_weights, dim=1), torch.cat(hm_masks, dim=1)
 
 
     def _get_src_permutation_idx(self, indices):
@@ -861,17 +880,17 @@ class SetCriterion(nn.Module):
         ### CONTRASTIVE LOSS ###
         ########################
         if self.use_contrastive_loss:
-            loss, stats = self.loss_contrastive(outputs, targets)
+            loss, stat = self.loss_contrastive(outputs, targets)
             losses.update(loss)
-            stats.update(stats)
+            stats.update(stat)
 
         #########################
         ### CENTEREDNESS LOSS ###
         #########################
         if self.use_centeredness_args:
-            loss, stats = self.loss_centeredness(outputs, targets)
+            loss, stat = self.loss_centeredness(outputs, targets)
             losses.update(loss)
-            stats.update(stats)
+            stats.update(stat)
         
         return losses, stats
 
@@ -969,7 +988,7 @@ def build_model(args, device):
         weight_dict.update(aux_weight_dict)
         
     # Add Contrastive and centeredness Loss Weights
-    weight_dict.update({"contrastive_loss": args.CONTRASTIVE_LOSS, "centeredness_loss": args.centeredness_LOSS})
+    weight_dict.update({"contrastive_loss": args.CONTRASTIVE_LOSS, "centeredness_loss": args.CENTEREDNESS_LOSS})
 
     # Dn Loss Weights
     dn_weight_dict = {}

@@ -19,7 +19,8 @@ import numpy as np
 from pycocotools.coco import COCO
 from multiprocessing import Manager
 
-from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target, CustomBatch, collate_wrapper, set_worker_sharing_strategy
+from data_generator.build_transforms import make_base_transforms, make_tgt_transforms, make_input_transform
+from util.data_utils import Target, CustomBatch, collate_wrapper, set_worker_sharing_strategy
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
 

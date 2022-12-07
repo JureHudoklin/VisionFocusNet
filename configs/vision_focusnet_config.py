@@ -15,7 +15,7 @@ class Config():
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
     
-    BATCH_SIZE = 12
+    BATCH_SIZE = 1
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -102,12 +102,12 @@ class Config():
     ###########
     # Dataset #
     ###########
-    NUM_WORKERS = 6
+    NUM_WORKERS = 2
     NUM_TGTS = 5
     TGT_MIN_AREA = 500
     PIN_MEMORY = True
     
-    COCO_PATH = "/home/jure/datasets/COCO/images"
+    COCO_PATH = "/hdd/datasets/COCO/images"#"/home/jure/datasets/COCO/images"
     OBJECTS_365_PATH = "/home/jure/datasets/Objects365/data"
     
     AVD_TRAIN = "/home/jure/datasets/AVD/avd_train_coco_gt.json"

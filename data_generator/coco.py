@@ -19,7 +19,10 @@ import data_generator.transforms as T
 import data_generator.sltransforms as ST
 from torch.utils.data import DataLoader
 from util.misc import nested_tensor_from_tensor_list
-from util.data_utils import make_base_transforms, make_tgt_transforms, make_input_transform, Target, extract_tgt_img, collate_wrapper, set_worker_sharing_strategy
+from util.data_utils import Target, extract_tgt_img, collate_wrapper, set_worker_sharing_strategy
+from data_generator.build_transforms import make_base_transforms, make_tgt_transforms, make_input_transform
+
+
 
 class CocoLoader(torchvision.datasets.CocoDetection):
     """`MS Coco Detection <http://mscoco.org/dataset/#detections-challenge2016>`_ Dataset.
@@ -282,7 +285,7 @@ def build_dataset(image_set, args):
     assert os.path.exists(root), "Please download COCO dataset to {}".format(root)
     PATHS = {
         "train": (os.path.join(root, "train2017"), os.path.join(root, "annotations/instances_train2017.json")),
-        "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/jure_coco_val_coco_gt.json")), #instances_val2017.json
+        "val": (os.path.join(root, "val2017"), os.path.join(root, "annotations/instances_val2017.json")), #instances_val2017.json
     }
     img_folder, ann_file = PATHS[image_set]
     

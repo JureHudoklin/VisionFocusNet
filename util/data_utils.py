@@ -5,93 +5,7 @@ import PIL
 from torchvision.transforms import ToTensor, ToPILImage, Resize
 from util.box_ops import box_inter_union, box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
 from util.misc import nested_tensor_from_tensor_list
-from data_generator import transforms as T
-from data_generator import sltransforms as ST
 
-def make_input_transform():
-    normalize = T.Compose([
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    return normalize
-
-def make_base_transforms(image_set):
-    scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
-
-    if image_set == "train":
-        return T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomSelect(
-                T.RandomResize(scales, max_size=1333),
-                T.Compose([
-                    T.RandomResize([400, 500, 600]),
-                    T.RandomSizeCrop(384, 600, keep_boxes = True),
-                    T.RandomResize(scales, max_size=1333),
-                ])
-            ),
-            ST.RandomBlackAndWhite(prob = 0.1),
-            ST.RandomSelectMulti([
-                    ST.AdjustBrightness(0.7, 1.3),
-                    ST.AdjustContrast(0.7, 1.3),
-                    T.NoTransform(),
-                ]),
-        ])
-
-    if image_set == "val":
-        return T.NoTransform()
-
-    raise ValueError(f"unknown {image_set}")
-
-def make_tgt_transforms(image_set,
-                        tgt_img_size=224,
-                        tgt_img_max_size=448,
-                        random_rotate = True,
-                        use_sl_transforms = True,
-                        random_perspective=True,
-                        random_pad=True,
-                        augmnet_bg="random"):
-    if image_set == "train":
-        tfs = []
-        if random_rotate:
-            tfs.append(
-                T.RandomSelect(
-                    T.RandomRotate(),
-                    T.NoTransform(),
-                ))
-        if random_perspective:
-            tfs.append(T.RandomPerspective())
-        if random_pad:
-            tfs.append(T.RandomPad((0.3, 0.3)))
-        if type(augmnet_bg) == str:
-            tfs.append(T.FillBackground(augmnet_bg))
-        else:
-            tfs.append(T.FillBackground("solid_color", augmnet_bg))
-        tfs.append(T.Resize(tgt_img_size, max_size=tgt_img_max_size))
-        tfs.append(T.RandomHorizontalFlip())
-        if use_sl_transforms:
-            tfs.append(
-                ST.RandomSelectMulti([
-                    ST.AdjustBrightness(0.7, 1.3),
-                    ST.AdjustContrast(0.7, 1.3),
-                    T.NoTransform(),
-                ]),
-            )
-        tfs.append(
-                ST.RandomSelectMulti([
-                    ST.LightingNoise(),
-                    T.NoTransform(),
-                ]),
-            )
-        
-        return T.Compose(tfs)
-    
-    if image_set == "val":
-        tfs = []
-        tfs.append(T.FillBackground("random", (124, 116, 104)))
-        tfs.append(T.Resize(tgt_img_size, max_size=tgt_img_max_size))
-        return T.Compose(tfs)
-
-    raise ValueError(f"unknown {image_set}")
 
 def display_data(data, save_name="dataset_visualize"):
     """ Given a batch of data it displays: Images, Tgt Images and bounding boxes
@@ -236,7 +150,7 @@ def make_dummy_input(batch_size, num_tgts,
     """
     samples = torch.rand( 3, img_size[0], img_size[1]).to(device) #
     samples = nested_tensor_from_tensor_list([samples]*batch_size)
-    tgt_imgs = torch.rand(3, tgt_size, tgt_max_size).to(device)
+    tgt_imgs = torch.rand(3, tgt_size[0], tgt_size[1]).to(device)
     tgt_imgs = nested_tensor_from_tensor_list([tgt_imgs]*batch_size*num_tgts)
     tgt_dict = {"boxes": torch.rand(tgt_entry_size, 4).to(device),
                 "labels": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
@@ -244,8 +158,8 @@ def make_dummy_input(batch_size, num_tgts,
                 "classes": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
                 "sim_classes": torch.ones(tgt_entry_size, dtype=torch.long).to(device),
                 "iscrowd": torch.rand(tgt_entry_size).to(device),
-                "size": torch.tensor([img_size, img_max_size]).to(device),
-                "orig_size": torch.tensor([img_size, img_max_size]).to(device),
+                "size": torch.tensor([img_size[0], img_size[1]]).to(device),
+                "orig_size": torch.tensor([img_size[0], img_size[1]]).to(device),
                 "valid_targets": torch.ones(num_tgts, dtype=torch.bool).to(device),}
     
     base_target = {f"base_{k}" : v for k, v in tgt_dict.items()}

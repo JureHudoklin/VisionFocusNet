@@ -78,7 +78,6 @@ def crop(image, target, region, keep_boxes = True):
      
     return cropped_image, target
 
-
 def hflip(image, target):
     assert isinstance(image, PIL.Image.Image)
     assert isinstance(target, Target) or target is None
@@ -97,7 +96,6 @@ def hflip(image, target):
         target.update(boxes = boxes)
 
         return flipped_image, target
-
 
 def resize(image, target, size, max_size=None):
     assert isinstance(image, PIL.Image.Image)
@@ -152,7 +150,6 @@ def resize(image, target, size, max_size=None):
     target["size"] = torch.tensor([h, w])
 
     return rescaled_image, target
-
 
 def pad(image, target, padding):
     assert isinstance(image, PIL.Image.Image)
@@ -300,6 +297,7 @@ def rotate(image, target, angle):
 
     return new_image, target
 
+
 class RandomCrop(object):
     def __init__(self, size):
         self.size = size
@@ -352,7 +350,6 @@ class RandomHorizontalFlip(object):
     def __str__(self) -> str:
         return "RandomHorizontalFlip"
 
-
 class RandomRotate(object):
     def __init__(self, ang_min = -90, ang_max = 90) -> None:
         self.ang_min = ang_min
@@ -377,7 +374,6 @@ class Rotate(object):
     def __str__(self) -> str:
         return "Rotate"
 
-
 class RandomResize(object):
     def __init__(self, sizes, max_size=None):
         assert isinstance(sizes, (list, tuple))
@@ -395,7 +391,7 @@ class RandomResize(object):
     
     def __str__(self) -> str:
         return "RandomResize"
-
+    
 class Resize(object):
     def __init__(self, size, max_size=None):
         self.size = size
@@ -444,7 +440,6 @@ class RandomPerspective(object):
             pass
         return img, target
         
-
 class RandomSelect(object):
     """
     Randomly selects between transforms1 and transforms2,
@@ -518,7 +513,6 @@ class ToTensor(object):
     def __str__(self) -> str:
         return "ToTensor"
 
-
 class RandomErasing(object):
 
     def __init__(self, *args, **kwargs):
@@ -529,7 +523,6 @@ class RandomErasing(object):
     
     def __str__(self) -> str:
         return "RandomErasing"
-    
     
 class FillBackground(object):
     def __init__(self, type="random", color = (124, 116, 104), *args, **kwargs):
@@ -568,7 +561,6 @@ class FillBackground(object):
             
     def __str__(self) -> str:
         return "Fill Background"
-
 
 class Normalize(object):
     def __init__(self, mean, std):
