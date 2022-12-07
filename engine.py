@@ -44,9 +44,9 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
             
         # print statistics
         if batch % 10 == 0:
-            ETA = get_ETA(start_time, batch, total_batches)   
+            _, ETA = get_ETA(start_time, batch, total_batches)   
             description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
-            print(description, )
+            print(description)
             
         if batch % 100 == 0:
             stats = stats_tracker.get_stats_current()

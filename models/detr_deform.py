@@ -699,14 +699,12 @@ class SetCriterion(nn.Module):
         hm_cc = [it.view(bs, -1) for it in hm_cc] # [B, HW]
         hm_cc = torch.cat(hm_cc, dim=1) # [B, HW]
         
-        print(hm_cc.shape)
         l_cen = F.binary_cross_entropy_with_logits(hm_cc,
                                         hm_targets,
                                         weight=hm_weights,
                                         reduction="none") #[B, HW]
         l_cen = l_cen.sum(dim=1) / (hm_masks.sum(dim=-1) + 1)
         l_cen = l_cen.mean()
-        print(l_cen)
         
         l_enc = F.binary_cross_entropy_with_logits(hm_feat.reshape(bs, -1),
                                         hm_targets,
@@ -716,7 +714,6 @@ class SetCriterion(nn.Module):
         l_enc = l_enc.mean()
         
         loss = l_cen + l_enc
-        #print(loss)
         
         losses = {}
         stats = {}

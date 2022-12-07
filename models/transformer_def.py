@@ -185,7 +185,7 @@ class Transformer(nn.Module):
         ### Heat Map ###
         ################
         hm_feat = self.centerness_embed(self.enc_output_norm(self.enc_output(memories))) #num_layers, B, HW, 1
-        hm_feat = hm_feat.masked_fill(~mask_flat.unsqueeze(0).unsqueeze(-1), float(-1e8)) # num_layers, B, HW, 1
+        hm_feat = hm_feat.masked_fill(mask_flat.unsqueeze(0).unsqueeze(-1), float(-1e8)) # num_layers, B, HW, 1
         
         heat_maps_dict = {"hm_feat": hm_feat, "mask_sizes": mask_sizes, "feat_sizes": feat_sizes}
         
@@ -198,9 +198,8 @@ class Transformer(nn.Module):
                 h_, w_ = mask_sizes[:, lvl, 0], mask_sizes[:, lvl, 1] # B
                 lvl_start_idx = level_start_index[lvl]
 
-                heat_map = heat_map.view(-1, H_, W_, 1) # B, H, W, 1
-                mem = mem_last[:, lvl_start_idx:lvl_start_idx + h_ * w_, :] # B, HW, C
-                mem = mem.view(-1, H_, W_, self.embed_dim) # B, H, W, C
+                mem = mem_last[:, lvl_start_idx:lvl_start_idx + H_ * W_, :] # B, HW, C
+                mem = mem.view(-1, H_, W_, self.d_model) # B, H, W, C
                 
                 bbox_wh = self.delta_bbox_xy(mem) # [B, H, W, 4]
             
