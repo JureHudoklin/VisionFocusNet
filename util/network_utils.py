@@ -49,30 +49,9 @@ def load_model(file_name, model, optimizer, load_dir, device):
         print(f"Missing keys: {missing_keys}", f"Unexpected keys: {unexpected_keys}", sep = "\n")
         print("Loading model without optimizer")
         
-    epoch = checkpoint["epoch"]
-    step = checkpoint["step"]
+    epoch = checkpoint.get("epoch", 0)
+    step = checkpoint.get("step", 0)
     return model, optimizer, epoch, step
-
-def partial_load_model(model, optimizer, load_dir, device, epoch = None):
-    if epoch is None:
-        files = [f.split("_")[1].split(".")[0] for f in os.listdir(load_dir) if f.endswith(".pth")]
-        ep_num = []
-        ep_inter = []
-        for ep in files:
-            if ep.isdigit():
-                ep_num.append(int(ep))
-            else:
-                ep_inter.append(ep)
-        epoch = max(ep_num) if len(ep_num) > 0 else ep_inter[0]
-    checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
-    missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-    
-    print(f"Missing keys: {missing_keys}")
-    print(f"Unexpected keys: {unexpected_keys}")
-    
-    epoch = checkpoint["epoch"]
-    return model, optimizer, epoch
-    
 
 @torch.no_grad()
 def display_model_outputs(outputs, samples, tgt_imgs, targets):
