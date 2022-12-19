@@ -41,7 +41,7 @@ class DETR(nn.Module):
                  two_stage = False,
                  dn_args: dict = None,
                  contrastive_loss = True,
-                 centeredness_loss = True,):
+                 loss_centeredness = True,):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -60,7 +60,7 @@ class DETR(nn.Module):
         self.use_checkpointing = use_checkpointing
         self.two_stage = two_stage
         self.contrastive_loss = contrastive_loss
-        self.centeredness_loss = centeredness_loss
+        self.loss_centeredness = loss_centeredness
 
         self.dn_args = dn_args
 
@@ -256,7 +256,7 @@ class DETR(nn.Module):
         #####################
         # Centeredness Loss #
         #####################
-        if self.centeredness_loss:
+        if self.loss_centeredness:
             heat_map_dict["hm_cc"] = hm_cc_list
         out["heat_maps_dict"] = heat_map_dict
 
@@ -717,12 +717,10 @@ class SetCriterion(nn.Module):
         
         losses = {}
         stats = {}
-        losses["centeredness_loss"] = loss
+        losses["loss_centeredness"] = loss
         
         if log:
-            stats["centeredness_loss"] = loss.detach()
-            #stats["heat_map"] = hm_encoder.sigmoid().detach()
-            #stats["heat_map_gt"] = hm_mask.detach()
+            stats["loss_centeredness"] = loss.detach()
         return losses, stats
     
     @torch.no_grad()
@@ -966,7 +964,7 @@ def build_model(args, device):
         two_stage=args.TWO_STAGE,
         dn_args=args.DN_ARGS,
         contrastive_loss=args.CONTRASTIVE_LOSS > 0,
-        centeredness_loss=args.CENTEREDNESS_LOSS > 0,
+        loss_centeredness=args.CENTEREDNESS_LOSS > 0,
     )
 
     ### WEIGHTS AND LOSSES ###
@@ -985,7 +983,7 @@ def build_model(args, device):
         weight_dict.update(aux_weight_dict)
         
     # Add Contrastive and centeredness Loss Weights
-    weight_dict.update({"contrastive_loss": args.CONTRASTIVE_LOSS, "centeredness_loss": args.CENTEREDNESS_LOSS})
+    weight_dict.update({"contrastive_loss": args.CONTRASTIVE_LOSS, "loss_centeredness": args.CENTEREDNESS_LOSS})
 
     # Dn Loss Weights
     dn_weight_dict = {}

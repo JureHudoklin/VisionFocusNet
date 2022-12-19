@@ -15,12 +15,11 @@ class Config():
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
     
-    BATCH_SIZE = 12
+    BATCH_SIZE = 9
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
     EOS_COEF = 0.1 # Weight for no-object class
-    
     FOCAL_ALPHA = 0.25
     
     ################
@@ -54,9 +53,9 @@ class Config():
     
     DROPOUT = 0.0
     N_HEADS = 8
-    NUM_LEVELS = 1
+    NUM_LEVELS = 2
     NUM_QUERIES = 100 # Num of object queries
-    TWO_STAGE = True
+    TWO_STAGE = False
     D_MODEL = 256
     DIM_FEEDFORWARD = 2048
     NUM_ENCODER_LAYERS = 6
@@ -72,8 +71,8 @@ class Config():
     TEMPLATE_ENCODER = {
         "name": "vits16",
         "pretrained" : True,
-        "lr" : 2e-6,
-        "use_checkpointing" : False,
+        "lr" : 0, #2e-6,
+        "use_checkpointing" : True,
     }
     
     # DN-DETR

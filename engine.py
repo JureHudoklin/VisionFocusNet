@@ -30,51 +30,21 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
     
     
     for data in data_loader: #samples, tgt_imgs, targets
+        if batch == 1:
+            # --- Do a dry run to reserve the buffers ---
+            dry_run(cfg, model, criterion, optimizer)
+            print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
+            
         ### Get Data ###
         samples, tgt_imgs, targets = data.samples, data.tgt_imgs, data.targets
         samples = samples.cuda(non_blocking=True)
         tgt_imgs = tgt_imgs.cuda(non_blocking=True)
         targets = [{k: v.cuda(non_blocking=True) for k, v in t.items()} for t in targets]
 
-
-        if batch == 1:
-            # --- Do a dry run to reserve the buffers ---
-            dry_run(cfg, model, criterion, optimizer)
-            print(torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
-            
-        # print statistics
-        if batch % 10 == 0:
-            _, ETA = get_ETA(start_time, batch, total_batches)   
-            description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
-            print(description)
-            
-        if batch % 100 == 0:
-            stats = stats_tracker.get_stats_current()
-            merged = {**stats[0], **stats[1]}
-            write_summary(writer, merged, step, f"running_stats")
-        
-        if batch % 1000 == 0:
-            fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-            writer.add_figure("traing/img", fig, step)
-            plt.close(fig)
-            
-            hm_fig = display_heat_maps(stats_dict["heat_map"], stats_dict["heat_map_gt"], samples, step)
-            writer.add_figure("traing/img_hm", hm_fig, step)
-           
-            if evaluate_fn is not None:
-                evaluate_fn()
-                model.train()
-                criterion.train()
-            
-        if batch % 5000 == 0:
-            torch.cuda.empty_cache()
-            save_model(model, optimizer, epoch, step, save_dir, name = "intermediate")
-                    
-        batch += 1
-        step += bs
-        
+        ### Forward Pass ###
         outputs = model(samples, tgt_imgs, targets)
 
+        ### Loss ###
         loss_dict, stats_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
         dn_weight_dict = criterion.dn_weight_dict
@@ -89,6 +59,7 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         loss_dict["loss_dn"] = loss_dn
         stats_dict["loss"] = losses
 
+        ### Backward Pass ###
         optimizer.zero_grad(set_to_none=True)
         losses.backward()
         if max_norm > 0:
@@ -96,16 +67,44 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         optimizer.step()
         
         stats_tracker.update(loss_dict, stats_dict)
+
+        ### Statistics ###  
+        if batch % 10 == 0:
+            _, ETA = get_ETA(start_time, batch, total_batches)   
+            description = f"E: [{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
+            print(description)
+                        
+        if batch % 100 == 0:
+            stats = stats_tracker.get_stats_current()
+            merged = {**stats[0], **stats[1]}
+            write_summary(writer, merged, step, f"running_stats")
+        
+        if batch % 1000 == 0:
+            fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
+            writer.add_figure("traing/img", fig, step)
+            plt.close(fig)
+           
+            if evaluate_fn is not None:
+                evaluate_fn(step = step, epoch = epoch)
+                model.train()
+                criterion.train()
+            
+        if batch % 5000 == 0:
+            torch.cuda.empty_cache()
+            save_model(model, optimizer, epoch, step, save_dir, name = "intermediate")
+                    
+        batch += 1
+        step += bs
         
     if evaluate_fn is not None:
-        evaluate_fn(epoch = batch+epoch*len(data_loader))
+        evaluate_fn(step = step, epoch = epoch)
         model.train()
         criterion.train()
         
-    return stats_tracker.get_stats_avg()
+    return stats_tracker.get_stats_avg(), step
 
 
-def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writer, save_dir, cfg):
+def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, step, writer, save_dir, cfg):
     model.eval()
     criterion.eval()
     for i in range(len(data_loaders)):
@@ -130,10 +129,6 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
                 eval_start = time.time()
                 outputs = model(samples, tgt_imgs, targets)
                 eval_time = time.time() - eval_start
-                # t = torch.cuda.get_device_properties(0).total_memory
-                # r = torch.cuda.memory_reserved(0)
-                # a = torch.cuda.memory_allocated(0)
-                # print("Memory use:", a, r)
 
                 ### CALCULATE LOSS ###
                 loss_dict, stats_dict = criterion(outputs, targets)
@@ -152,30 +147,22 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
                 
                 stats_tracker.update(loss_dict, stats_dict)
                 
-                
                 ### COCO EVAL ###
                 results = postprocessor(targets, outputs)
                 res = {target['image_id'].item(): output for target, output in zip(targets, results)}
                 coco_evaluator.update(res)
 
-                #ann_res = res_to_ann(target=targets, result=results)
-                #results_gathered.extend(ann_res)
-                
-                
-                
                 # print statistics
                 if batch % 10 == 0:
-                    ETA = (time.time() - start_time) * (total_batches-batch) / batch
-                    ETA = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"     
+                    _, ETA = get_ETA(start_time, batch, total_batches)    
                     description = f"E: [EVAL:{epoch}], [{batch}/{total_batches}] ETA: {ETA} \n {str(stats_tracker)} \n "
                     print(description, )
             
                 batch += 1
               
-              
             fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
-            writer.add_figure("val/img", fig, batch+epoch*total_batches)
-            fig.savefig(os.path.join(save_dir, f"val_{i}_{epoch}_{batch}.png"))
+            writer.add_figure("val/img", fig, step)
+            fig.savefig(os.path.join(save_dir, f"val_{i}_{epoch}_{step}.png"))
             plt.close(fig)
                 
             if coco_evaluator is not None:
@@ -187,18 +174,11 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, writ
             coco_stats = coco_evaluator.coco_eval['bbox'].stats.tolist()
             coco_dict = {name: coco_stats[i] for i, name in enumerate(names)}
             
-        
-            
             stats = stats_tracker.get_stats_avg()
-            write_summary(writer, stats[0], epoch, f"val_{i}_loss")
-            write_summary(writer, stats[1], epoch, f"val_{i}_stats")
-            write_summary(writer, coco_dict, epoch, f"val_{i}")
+            write_summary(writer, stats[0], step, f"val_{i}_loss")
+            write_summary(writer, stats[1], step, f"val_{i}_stats")
+            write_summary(writer, coco_dict, step, f"val_{i}")
             
-            # Save gathered results
-            #with open(os.path.join(save_dir, f"val_{i}_{epoch}_{batch}.json"), "w") as f:
-            #    json.dump(results_gathered, f)
-            
-        
     return stats, coco_dict
 
 

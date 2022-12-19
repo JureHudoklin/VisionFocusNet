@@ -15,32 +15,35 @@ def write_summary(writer, stats_dict, epoch, split):
     for k, v in stats_dict.items():
         writer.add_scalar(f"{split}/{k}", v, epoch)
     
-def save_model(model, optimizer, epoch, step, save_dir, name = None):
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-        print(f"Created directory: {save_dir}")
-    if name is None:
-        name = epoch
+def save_model(model, optimizer, epoch, step, save_dir, name = ""):
+    weights_dir = os.path.join(save_dir, "weights")
+    if not os.path.exists(weights_dir):
+        os.makedirs(weights_dir)
+        print(f"Created directory: {weights_dir}")
     torch.save({
         "epoch": epoch,
         "step": step,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-    }, os.path.join(save_dir, f"epoch_{step}_{name}.pth"))
+    }, os.path.join(weights_dir, f"e{epoch}_s{step}_{name}.pth"))
 
 def load_model(file_name, model, optimizer, load_dir, device):
+    weights_dir = os.path.join(load_dir, "weights")
     if file_name is None:
         print("No file name provided, loading latest model")
-        files = [f.split("_")[-1].split(".")[0] for f in os.listdir(load_dir) if f.endswith(".pth")]
+        files = [f.strip(".pth") for f in os.listdir(weights_dir) if f.endswith(".pth")]
+    
         # Prompts user to select a file if there are multiple
         if len(files) > 1:
             print("Multiple files found, please select one:")
             for i, f in enumerate(files):
                 print(f"{i}: {f}")
             file_name = files[int(input("File: "))]
+        else:
+            file_name = files[0]
         
     print(f"Loading model: {file_name}")
-    checkpoint = torch.load(os.path.join(load_dir, f"{file_name}.pth"), map_location=device)
+    checkpoint = torch.load(os.path.join(weights_dir, f"{file_name}.pth"), map_location=device)
     try:
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

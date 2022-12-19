@@ -79,7 +79,7 @@ def main(args):
     start_epoch = 0
     step = 0
     if args.load_dir is not None:
-        model, optimizer, start_epoch, step = load_model(model, optimizer, args.load_dir, device, epoch=None)
+        model, optimizer, start_epoch, step = load_model(None, model, optimizer, args.load_dir, device)
         if start_epoch is None:
             start_epoch = 0
         else:
@@ -87,7 +87,7 @@ def main(args):
             start_epoch += 1
         print(f"Loaded model from {args.load_dir} at epoch {start_epoch}")
         
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=last_epoch)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP) #, last_epoch=last_epoch
     
     # Set Logging
     writer = SummaryWriter(log_dir=os.path.join(save_dir, "logs"))
@@ -97,15 +97,14 @@ def main(args):
     # COCO
     train_data_loader, test_data_loader = get_coco_data_generator(cfg)
     # MIX
-    #train_data_loader, test_data_loaders = get_concat_dataset(cfg)
+    train_data_loader, test_data_loaders = get_concat_dataset(cfg)
     # Concat
     
     # Get COCO GT for evaluation
-    # val_base_dirs =cfg.TEST_DATASETS
-    # coco_ds = []
-    # for val_base_dir in val_base_dirs:
-    #     coco_ds.append(COCO(val_base_dir))
-    coco_ds = None
+    val_base_dirs =cfg.TEST_DATASETS
+    coco_ds = []
+    for val_base_dir in val_base_dirs:
+        coco_ds.append(COCO(val_base_dir))
     
     #########################################################
     ##############    TRAINING / EVALUATION   ###############
@@ -114,11 +113,11 @@ def main(args):
                                model=model,
                                criterion=criterion,
                                postprocessor=postprocessor,
-                               data_loaders = [test_data_loader],
+                               data_loaders = test_data_loaders,
                                coco_ds = coco_ds,
                                writer=writer,
                                save_dir=save_dir,
-                               cfg=cfg,)
+                               cfg=cfg,)    
     
     print("Start training")
     training_start_time = time.time()
@@ -128,7 +127,7 @@ def main(args):
             print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
             
             ############### Train ###############
-            stats = train_one_epoch(model=model,
+            stats, step = train_one_epoch(model=model,
                                     criterion=criterion,
                                     data_loader=train_data_loader,
                                     optimizer = optimizer,
@@ -160,11 +159,11 @@ if __name__ == "__main__":
     # Get Arguments
     parser.add_argument("--load_dir", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default=None)
-    parser.add_argument("--eval_only", action="store_true")
+    parser.add_argument("--eval_only", action="store_true", default=False)
     args = parser.parse_args()
     
     if args.load_dir is not None:
         if not os.path.exists(args.load_dir):
             raise ValueError("Load directory does not exist")
-
+    print(args)
     main(args)

@@ -43,10 +43,10 @@ class CocoEvaluator(object):
             results = self.prepare(predictions, iou_type)
 
             # suppress pycocotools prints
-            # with open(os.devnull, 'w') as devnull:
-            #     with contextlib.redirect_stdout(devnull):
-            coco_dt = COCO.loadRes(self.coco_gt, results) if results else COCO()
-            coco_eval = self.coco_eval[iou_type]
+            with open(os.devnull, 'w') as devnull:
+                with contextlib.redirect_stdout(devnull):
+                    coco_dt = COCO.loadRes(self.coco_gt, results) if results else COCO()
+                    coco_eval = self.coco_eval[iou_type]
 
             coco_eval.cocoDt = coco_dt
             coco_eval.params.imgIds = list(img_ids)
