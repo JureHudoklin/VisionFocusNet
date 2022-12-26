@@ -19,14 +19,11 @@ from torch.utils import checkpoint
 
 from typing import Optional, List
 
-
 from torch import nn, Tensor
 from .position_encoding import PositionEmbeddingSineChannel
 from .attention import SimpleMultiheadAttention, MultiheadAttention_x
 from .layer_util import MLP, _get_activation_fn, _get_clones, inverse_sigmoid
-from .feature_alignment import TemplateFeatAligner, TemplateFeatAligner_v2, TemplateFeatAligner_v4, TemplateFeatAligner_v5
 from models.ops.modules import MSDeformAttn
-
 
 
 class Transformer(nn.Module):
@@ -86,10 +83,7 @@ class Transformer(nn.Module):
         self.d_model = d_model
         self.nhead = nhead
         self.dec_layers = num_decoder_layers
-        self.num_queries = num_queries
-        
-        self.feature_alignment = TemplateFeatAligner(self.d_model)
-        
+        self.num_queries = num_queries        
 
     def _reset_parameters(self):
         for p in self.parameters():

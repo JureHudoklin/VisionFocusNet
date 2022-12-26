@@ -4,9 +4,9 @@ import torch.nn as nn
 import random
 
 from models.layer_util import inverse_sigmoid
-from . import box_ops
-from .statistics import prec_acc_rec
-from loses.sigmoid_focal_loss import FocalLoss, sigmoid_focal_loss, focal_loss
+from util import box_ops
+from util.statistics import prec_acc_rec
+from loses.sigmoid_focal_loss import focal_loss
 
 
 

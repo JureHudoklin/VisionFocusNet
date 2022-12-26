@@ -21,7 +21,7 @@ from engine import train_one_epoch, evaluate
 from util.network_utils import load_model, save_model, write_summary
 from util.misc import create_directory_structure
 from configs.vision_focusnet_config import Config
-from models.detr_deform import build_model
+from models.vision_focus_net import build_model
 from data_generator.coco import get_coco_data_generator, build_COCO_dataset
 from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
 from data_generator.concat import concat_datasets
@@ -89,7 +89,7 @@ def main(args):
             start_epoch += 1
         print(f"Loaded model from {args.load_dir} at epoch {start_epoch}")
         
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP) #, last_epoch=last_epoch
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=last_epoch)
     
     # Set Logging
     writer = SummaryWriter(log_dir=os.path.join(save_dir, "logs"))

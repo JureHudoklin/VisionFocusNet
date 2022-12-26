@@ -21,15 +21,14 @@ from .backbone import build_backbone, build_backbone_custom
 from .transformer_def import build_transformer
 from .template_encoder import build_template_encoder
 from .layer_util import MLP, inverse_sigmoid, roi_align_on_feature_map
-from .feature_alignment import TemplateFeatAligner
-from loses.sigmoid_focal_loss import focal_loss, FocalLoss
+from loses.sigmoid_focal_loss import focal_loss
 
 from loses.hungarian_matcher import build_matcher, build_two_stage_matcher
 
 
 
-class DETR(nn.Module):
-    """ DETR modefule for object detection """
+class VisionFocusNet(nn.Module):
+    """ VisionFocusNet module for template-based object detection """
     def __init__(self, backbone,
                  transformer,
                  template_encoder,
@@ -48,7 +47,7 @@ class DETR(nn.Module):
             transformer: torch module of the transformer architecture. See transformer.py
             num_classes: number of object classes
             num_queries: number of object queries, ie detection slot. This is the maximal number of objects
-                         DETR can detect in a single image. For COCO, we recommend 100 queries.
+                         VisionFocusNet can detect in a single image. For COCO, we recommend 100 queries.
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
         """
         super().__init__()
@@ -953,7 +952,7 @@ def build_model(args, device):
     transformer = build_transformer(args)
     template_encoder = build_template_encoder(args)
 
-    model = DETR(
+    model = VisionFocusNet(
         backbone,
         transformer,
         template_encoder,
@@ -1017,126 +1016,3 @@ def build_model(args, device):
 
     return model, criterion, postprocessor
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        # hm_cc = outputs["hm_cc"] # [B, 1, H, W]
-        # hm = outputs["heat_maps"] # [6, B, H, W, 1]
-        # hm = hm.permute(1, 0, 4, 2, 3) # [B, 6, 1, H, W]
-        
-        
-
-        # h, w = hm.shape[-2:]
-        # num_dec_lay = hm.shape[1]
-
-        # target_hm = torch.zeros((bs, 1, h, w), device=device)
-        # hm_mask = torch.zeros_like(target_hm)
-        # pos_samples_mask = torch.zeros_like(target_hm)
-        # control = torch.zeros_like(target_hm)
-        # for i, tgt in enumerate(targets):
-        #     bbox = tgt["base_boxes"] # [N, 4]
-        #     labels = tgt["base_labels"] # [N]
-            
-        #     bbox_areas = bbox[:, 2] * bbox[:, 3]
-        #     weights = torch.exp(-10*bbox_areas) # [N]
-
-        #     ## Reduce bboxes to 75% of original size
-        #     bbox[:, 2:] = bbox[:, 2:] * 0.75
-
-        #     bbox_pos = bbox[labels == 1] # [N, 4]
-        #     bbox_neg = bbox[labels == 0] # [N, 4]
-            
-        #     weights_pos = weights[labels == 1] # [N]
-        #     weights_neg = weights[labels == 0] # [N]
-            
-        #     bbox_pos = box_ops.box_cxcywh_to_xyxy(bbox_pos.clone())
-        #     bbox_neg = box_ops.box_cxcywh_to_xyxy(bbox_neg.clone())
-
-        #     mask = outputs["mask"][-1] # [B, H, W]
-        #     #control[i, 0, mask[i] == 1] = 1
-        #     valid_w = (~mask[i, 0, :]).sum(dim=0)
-        #     valid_h = (~mask[i, :, 0]).sum(dim=0)
-
-        #     bbox_pos = bbox_pos * torch.tensor([valid_w, valid_h, valid_w, valid_h], device=bbox_pos.device)
-        #     bbox_neg = bbox_neg * torch.tensor([valid_w, valid_h, valid_w, valid_h], device=bbox_neg.device)
-
-        #     bbox_pos = bbox_pos.long()
-        #     bbox_neg = bbox_neg.long()
-
-
-        #     # Set the center of the bbox to 1
-        #     for j in range(len(bbox_pos)):
-        #         #target_hm[i, 0, int(cy[j]), int(cx[j])] = 1
-        #         weight = weights_pos[j]
-        #         target_hm[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
-        #         hm_mask[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = weight # B, 1, H, W
-        #         pos_samples_mask[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
-        #         control[i, 0, bbox_pos[j, 1]:bbox_pos[j, 3], bbox_pos[j, 0]:bbox_pos[j, 2]] = 1
-        #     for j in range(len(bbox_neg)):
-        #         hm_mask[i, 0, bbox_neg[j, 1]:bbox_neg[j, 3], bbox_neg[j, 0]:bbox_neg[j, 2]] = 1
-
-        # target_hm_exp = target_hm.view(bs, 1, 1, h, w).repeat(1, num_dec_lay, 1, 1, 1)
-        # hm_mask_exp = hm_mask.view(bs, 1, 1, h, w).repeat(1, num_dec_lay, 1, 1, 1)
-        # pos_samples_mask_exp = pos_samples_mask.view(bs, 1, 1, h, w).repeat(1, num_dec_lay, 1, 1, 1)
-
-        # # Compute the centerness loss- focal loss
-        # #loss_centerness = sigmoid_focal_loss(hm.reshape(bs, -1), target_hm.reshape(bs, -1), weight=hm_mask.reshape(bs, -1), reduction="none")
-        # #loss_centerness = loss_centerness* hm_mask.view(bs, -1)
-        
-        # #loss_centerness_cc = sigmoid_focal_loss(hm_cc.reshape(bs, -1), target_hm[:, 0].reshape(bs, -1), weight=hm_mask[:, 0].reshape(bs, -1), reduction="none")
-        # #loss_centerness_cc = loss_centerness_cc * hm_mask[:, 0].view(bs, -1)
-
-        # loss_centerness = F.binary_cross_entropy_with_logits(hm.reshape(bs, -1),
-        #                                                      target_hm_exp.reshape(bs, -1),
-        #                                                      weight=hm_mask_exp.reshape(bs, -1),
-        #                                                      reduction="none")
-        # loss_centerness = loss_centerness.view(bs, num_dec_lay, -1).sum(dim=-1) / (pos_samples_mask_exp.view(bs, num_dec_lay, -1).sum(dim=-1) + 1)
-        # loss_centerness = loss_centerness.sum(dim=1) / num_dec_lay
-        # loss_centerness = loss_centerness.mean()
-        
-        
-        # loss_centerness_cc = F.binary_cross_entropy_with_logits(hm_cc.reshape(bs, -1),
-        #                                    target_hm.reshape(bs, -1),
-        #                                    weight=hm_mask.reshape(bs, -1),
-        #                                    reduction="none") #[B, HW]
-        # loss_centerness_cc = loss_centerness_cc.sum(dim=1) / (pos_samples_mask.view(bs, -1).sum(dim=-1) + 1)
-        # loss_centerness_cc = loss_centerness_cc.mean()
-        
-        # l_c = loss_centerness*1 + loss_centerness_cc*1
-        # losses["loss_centerness"] = l_c
-
-        # stats["heat_map"] = hm_cc.sigmoid().detach()
-        # stats["heat_map_gt"] = control.detach()

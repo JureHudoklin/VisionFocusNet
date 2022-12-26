@@ -32,6 +32,7 @@ def load_model(file_name, model, optimizer, load_dir, device):
     if file_name is None:
         print("No file name provided, loading latest model")
         files = [f.strip(".pth") for f in os.listdir(weights_dir) if f.endswith(".pth")]
+        files = sorted(files, key=lambda x: int(x.split("_")[0][1:]))
     
         # Prompts user to select a file if there are multiple
         if len(files) > 1:
