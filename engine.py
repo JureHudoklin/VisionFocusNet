@@ -83,15 +83,13 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
             fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
             writer.add_figure("traing/img", fig, step)
             plt.close(fig)
-           
+            
+        if batch % 5000 == 0:
+            save_model(model, optimizer, epoch, step, save_dir, name = "intermediate")
             if evaluate_fn is not None:
                 evaluate_fn(step = step, epoch = epoch)
                 model.train()
                 criterion.train()
-            
-        if batch % 5000 == 0:
-            torch.cuda.empty_cache()
-            save_model(model, optimizer, epoch, step, save_dir, name = "intermediate")
                     
         batch += 1
         step += bs
@@ -100,6 +98,8 @@ def train_one_epoch(model, criterion, data_loader, optimizer, epoch, writer, sav
         evaluate_fn(step = step, epoch = epoch)
         model.train()
         criterion.train()
+        
+    torch.cuda.empty_cache()
         
     return stats_tracker.get_stats_avg(), step
 
@@ -162,7 +162,7 @@ def evaluate(model, criterion, postprocessor, data_loaders, coco_ds, epoch, step
               
             fig = display_model_outputs(outputs, samples, tgt_imgs, targets)
             writer.add_figure("val/img", fig, step)
-            fig.savefig(os.path.join(save_dir, f"val_{i}_{epoch}_{step}.png"))
+            fig.savefig(os.path.join(save_dir, "images", f"val_{i}_{epoch}_{step}.png"))
             plt.close(fig)
                 
             if coco_evaluator is not None:

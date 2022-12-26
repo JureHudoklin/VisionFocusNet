@@ -280,7 +280,7 @@ class CocoLoader(torchvision.datasets.CocoDetection):
         return image, tgt_img, target, base_target
 
 
-def build_dataset(image_set, args):
+def build_COCO_dataset(image_set, args):
     root = args.COCO_PATH
     assert os.path.exists(root), "Please download COCO dataset to {}".format(root)
     PATHS = {
@@ -330,8 +330,8 @@ def get_coco_data_generator(args):
         Data loader for the coco dataset
     """
     
-    dataset_train = build_dataset(image_set='train', args=args)
-    dataset_val = build_dataset(image_set='val', args=args)    
+    dataset_train = build_COCO_dataset(image_set='train', args=args)
+    dataset_val = build_COCO_dataset(image_set='val', args=args)    
    
     sampler_train = torch.utils.data.RandomSampler(dataset_train)
     sampler_val = torch.utils.data.SequentialSampler(dataset_val)

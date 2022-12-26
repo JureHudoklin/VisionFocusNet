@@ -963,8 +963,8 @@ def build_model(args, device):
         num_levels=args.NUM_LEVELS,
         two_stage=args.TWO_STAGE,
         dn_args=args.DN_ARGS,
-        contrastive_loss=args.CONTRASTIVE_LOSS > 0,
-        loss_centeredness=args.CENTEREDNESS_LOSS > 0,
+        contrastive_loss=args.LOSS_CONTRASTIVE > 0,
+        loss_centeredness=args.LOSS_CENTEREDNESS > 0,
     )
 
     ### WEIGHTS AND LOSSES ###
@@ -983,7 +983,7 @@ def build_model(args, device):
         weight_dict.update(aux_weight_dict)
         
     # Add Contrastive and centeredness Loss Weights
-    weight_dict.update({"contrastive_loss": args.CONTRASTIVE_LOSS, "loss_centeredness": args.CENTEREDNESS_LOSS})
+    weight_dict.update({"loss_contrastive": args.LOSS_CONTRASTIVE, "loss_centeredness": args.LOSS_CENTEREDNESS})
 
     # Dn Loss Weights
     dn_weight_dict = {}
@@ -1008,8 +1008,8 @@ def build_model(args, device):
                              batch_size = args.BATCH_SIZE,
                              losses=losses,
                              two_stage=args.TWO_STAGE,
-                             base_loss=True,
-                             base_loss_levels=4)
+                             base_loss=args.BASE_LOSS,
+                             base_loss_levels=args.BASE_LOSS_LEVELS,)
     criterion.to(device)
 
     # Create the postprocessor

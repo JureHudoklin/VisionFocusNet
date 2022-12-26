@@ -22,6 +22,9 @@ class Config():
     EOS_COEF = 0.1 # Weight for no-object class
     FOCAL_ALPHA = 0.25
     
+    BASE_LOSS = True
+    BASE_LOSS_LEVELS = 4
+    
     ################
     # LOSS WEIGHTS #
     ################
@@ -31,8 +34,8 @@ class Config():
         "loss_bbox" : 5.0, # Bounding box regression loss weight
         "loss_giou" : 2.0, # Generalized IoU loss weight
     }
-    CONTRASTIVE_LOSS = 0.2
-    CENTEREDNESS_LOSS = 1.0
+    LOSS_CONTRASTIVE = 0.2
+    LOSS_CENTEREDNESS = 1.0
     
     ############
     # Backbone #
@@ -41,7 +44,7 @@ class Config():
         "name": "resnet50",
         "dilation": False,
         "return_intermediate_layers": True,
-        "lr" : 1e-5,
+        "lr" : 0,#1e-5,
         "pretrained": True,
     }
     POSITION_EMBEDDING =  "sine"

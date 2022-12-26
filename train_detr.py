@@ -22,8 +22,9 @@ from util.network_utils import load_model, save_model, write_summary
 from util.misc import create_directory_structure
 from configs.vision_focusnet_config import Config
 from models.detr_deform import build_model
-from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
-from data_generator.mixed_generator import get_concat_dataset
+from data_generator.coco import get_coco_data_generator, build_COCO_dataset
+from data_generator.mix_data_generator import get_mix_data_generator, build_MIX_dataset
+from data_generator.concat import concat_datasets
         
 
 def main(args):
@@ -40,6 +41,7 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
+        date = "test_3"
         save_dir = os.path.join("checkpoints", date)
         create_directory_structure(save_dir)
         print(f"Saving to: {save_dir}")
@@ -95,10 +97,17 @@ def main(args):
 
     ######### GET DATASET #########
     # COCO
-    train_data_loader, test_data_loader = get_coco_data_generator(cfg)
-    # MIX
-    train_data_loader, test_data_loaders = get_concat_dataset(cfg)
-    # Concat
+    #coco_train_loader, coco_test_loader = get_coco_data_generator(cfg)
+    # Mix Dataset
+    #mix_train_loader, mix_test_loader = get_mix_data_generator(cfg)
+    # --- CONCAT ---
+    concat_train_loader, concat_test_loader = concat_datasets( 
+        train_datasets=[
+            build_COCO_dataset("train", cfg),
+            #build_MIX_dataset("train", cfg.TRAIN_DATASETS, cfg),
+        ],
+        val_datasets=[build_MIX_dataset("val", [ds_dir], cfg) for ds_dir in cfg.TEST_DATASETS],
+        args=cfg,)
     
     # Get COCO GT for evaluation
     val_base_dirs =cfg.TEST_DATASETS
@@ -113,7 +122,7 @@ def main(args):
                                model=model,
                                criterion=criterion,
                                postprocessor=postprocessor,
-                               data_loaders = test_data_loaders,
+                               data_loaders = concat_test_loader,
                                coco_ds = coco_ds,
                                writer=writer,
                                save_dir=save_dir,
@@ -129,7 +138,7 @@ def main(args):
             ############### Train ###############
             stats, step = train_one_epoch(model=model,
                                     criterion=criterion,
-                                    data_loader=train_data_loader,
+                                    data_loader=concat_train_loader,
                                     optimizer = optimizer,
                                     epoch= epoch,
                                     step=step,
@@ -147,7 +156,7 @@ def main(args):
         
         ################ Eval ###############
         else:
-            stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loaders, coco_ds, epoch, writer, save_dir, cfg)
+            stats, coco_stats = evaluate(model, criterion, postprocessor, concat_test_loader, coco_ds, epoch, writer, save_dir, cfg)
             write_summary(writer, stats[0], epoch, "val_loss")
             write_summary(writer, stats[1], epoch, "val_stats")
             write_summary(writer, coco_stats, epoch, "val")
