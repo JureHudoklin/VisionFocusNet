@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from engine import train_one_epoch, evaluate
 from util.network_utils import load_model, partial_load_model, save_model, write_summary
 from configs.vision_focusnet_config import Config
-from models.detr_deform import build_model
+from models.vision_focus_net import build_model
 from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
 
 
