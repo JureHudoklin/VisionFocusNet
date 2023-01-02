@@ -41,7 +41,6 @@ def main(args):
     ######### SET PATHS #########
     if args.save_dir is None:
         date = time.strftime("%Y%m%d-%H%M%S")
-        date = "test_3"
         save_dir = os.path.join("checkpoints", date)
         create_directory_structure(save_dir)
         print(f"Saving to: {save_dir}")
@@ -88,8 +87,11 @@ def main(args):
             last_epoch = start_epoch
             start_epoch += 1
         print(f"Loaded model from {args.load_dir} at epoch {start_epoch}")
-        
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=last_epoch)
+    
+    try:
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=last_epoch)
+    except:
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.LR_DROP, last_epoch=-1)
     
     # Set Logging
     writer = SummaryWriter(log_dir=os.path.join(save_dir, "logs"))
@@ -104,7 +106,7 @@ def main(args):
     concat_train_loader, concat_test_loader = concat_datasets( 
         train_datasets=[
             build_COCO_dataset("train", cfg),
-            #build_MIX_dataset("train", cfg.TRAIN_DATASETS, cfg),
+            build_MIX_dataset("train", cfg.TRAIN_DATASETS, cfg),
         ],
         val_datasets=[build_MIX_dataset("val", [ds_dir], cfg) for ds_dir in cfg.TEST_DATASETS],
         args=cfg,)

@@ -513,10 +513,6 @@ class TransformerDecoder(nn.Module):
                 reference_points.unsqueeze(0).transpose(1, 2)
             ]
 
-
-
-
-
 class TransformerDecoderLayer(nn.Module):
     def __init__(self,
                 d_model: int,
@@ -630,7 +626,6 @@ class TransformerDecoderLayer(nn.Module):
         out_cross_attn = self.norm3(tgt)
         
         return out_self_attn, out_cross_attn
-
 
 
 def build_transformer(args):

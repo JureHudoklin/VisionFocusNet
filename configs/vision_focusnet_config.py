@@ -15,7 +15,7 @@ class Config():
     LR_DROP = 25 # Drop LR after X epochs
     MAX_NORM = 0.1
     
-    BATCH_SIZE = 9
+    BATCH_SIZE = 8
     EPOCHS = 50
     SAVE_BEST_ONLY = False
     AUX_LOSS = True  # If we want outputs of all transformer layers --> add loss for each layer
@@ -44,7 +44,7 @@ class Config():
         "name": "resnet50",
         "dilation": False,
         "return_intermediate_layers": True,
-        "lr" : 0,#1e-5,
+        "lr" : 1e-5,
         "pretrained": True,
     }
     POSITION_EMBEDDING =  "sine"
