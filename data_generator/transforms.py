@@ -9,6 +9,7 @@ import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
 import copy
+import time
 
 
 from torchvision.ops.misc import interpolate
@@ -134,6 +135,7 @@ def resize(image, target, size, max_size=None):
     if target is None:
         return rescaled_image, target
 
+    target["size"] = torch.tensor(size)
     if len(target) == 0:
         return rescaled_image, target
 
@@ -145,9 +147,6 @@ def resize(image, target, size, max_size=None):
     scaled_boxes = boxes * torch.as_tensor([ratio_width, ratio_height, ratio_width, ratio_height])
     target["boxes"] = scaled_boxes
     target.calc_area()
-
-    h, w = size
-    target["size"] = torch.tensor([h, w])
 
     return rescaled_image, target
 
@@ -401,7 +400,8 @@ class Resize(object):
         w, h = img.size
         if w < h:
             img, target = rotate_90(img, target)
-        return resize(img, target, self.size, self.max_size)
+        out = resize(img, target, self.size, self.max_size)
+        return out
     
     def __str__(self) -> str:
         return "Resize"
@@ -538,7 +538,7 @@ class FillBackground(object):
             type = random.choice(self.types)
         else:
             type = self.type
-        
+                    
         img = img.copy()
         img = np.array(img)
         mask = np.sum(img, axis=2) == 0

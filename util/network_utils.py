@@ -59,7 +59,7 @@ def load_model(file_name, model, optimizer, load_dir, device):
 
 @torch.no_grad()
 def display_model_outputs(outputs, samples, tgt_imgs, targets):
-    bs = len(targets)
+    bs = samples.tensors.shape[0]
     tgt_imgs, _ = tgt_imgs.decompose()
     N_t = tgt_imgs.shape[0]//bs
     denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -173,4 +173,5 @@ def display_heat_maps(hm, hm_gt, samples):
     plt.subplots_adjust(wspace=1, hspace=1)
     
     return fig
+
     

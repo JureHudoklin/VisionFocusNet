@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 import PIL
+import copy
 from torchvision.transforms import ToTensor, ToPILImage, Resize
 from util.box_ops import box_inter_union, box_xyxy_to_cxcywh, box_cxcywh_to_xyxy
 from util.misc import nested_tensor_from_tensor_list
@@ -320,5 +321,101 @@ def extract_tgt_img(image, boxes, num_tgts=3, add_noise=0.3):
             out_targets.append(image.copy().crop(box.int().tolist()))
 
     return out_targets
+
+def coco_ann_to_vfn_ann(train_coco_ann):
+    """ Convert COCO annotation to VFN annotation format
+    Same as COCO but groups annotations by category and supercategory
+
+    Parameters
+    ----------
+    train_coco_ann : Dict
+        COCO annotation
+
+    Returns
+    -------
+    val_coco_gt : Dict
+        Annotations gathered by category
+    supercat_to_cat : Dict
+        Annotation gathered by supercategory
+    """
+    
+    
+    coco_images = train_coco_ann["images"]
+    coco_anns = train_coco_ann["annotations"]
+    coco_cats = train_coco_ann["categories"]
+    
+    cat_id_to_cat = {it["id"]: it for it in coco_cats}
+    ann_id_to_ann = {it["id"]: it for it in coco_anns}
+    image_id_to_image = {it["id"]: it for it in coco_images}
+    
+    ### Group annotations by picture ###
+    image_id_to_anns = {it["id"]: [] for it in coco_images}
+    for it in coco_anns:
+        image_id_to_anns[it["image_id"]].append(it)
+        
+    ### Create annotation file by category ###
+    new_image_id = 1
+    new_images = []
+    new_anns = []
+    for image_id, anns in image_id_to_anns.items():
+        image = copy.deepcopy(image_id_to_image[image_id])
+        # Group annotations by category
+        cat_id_to_anns_ = {}
+        for ann in anns:
+            cat_id = ann["category_id"]
+            if cat_id not in cat_id_to_anns_:
+                cat_id_to_anns_[cat_id] = []
+            cat_id_to_anns_[cat_id].append(ann)
+        
+        for cat_id, anns_in_cat in cat_id_to_anns_.items():
+            new_image = copy.deepcopy(image)
+            new_image["id"] = new_image_id
+            new_images.append(new_image)
+            new_image_id += 1
+            
+            for ann in anns_in_cat:
+                new_ann = copy.deepcopy(ann)
+                new_ann["image_id"] = new_image["id"]
+                new_anns.append(new_ann)
+                
+    val_coco_gt = {
+        "images": new_images,
+        "annotations": new_anns,
+        "categories": coco_cats,
+    }
+    
+    ### Create annotation file by super category ###
+    new_image_id = 1
+    new_images = []
+    new_anns = []
+    for image_id, anns in image_id_to_anns.items():
+        image = copy.deepcopy(image_id_to_image[image_id])
+        # Group annotations by category
+        sup_id_to_anns_ = {}
+        for ann in anns:
+            sup_id = ann["sup_id"]
+            if sup_id not in sup_id_to_anns_:
+                sup_id_to_anns_[sup_id] = []
+            sup_id_to_anns_[sup_id].append(ann)
+        
+        for sup_id, anns_in_sup in sup_id_to_anns_.items():
+            new_image = copy.deepcopy(image)
+            new_image["id"] = new_image_id
+            new_images.append(new_image)
+            new_image_id += 1
+            
+            for ann in anns_in_sup:
+                new_ann = copy.deepcopy(ann)
+                new_ann["image_id"] = new_image["id"]
+                new_anns.append(new_ann)
+                
+    supval_coco_gt = {
+        "images": new_images,
+        "annotations": new_anns,
+        "categories": coco_cats,
+    }
+    
+    return val_coco_gt, supval_coco_gt
+
 
 

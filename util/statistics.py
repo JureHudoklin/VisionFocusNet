@@ -106,21 +106,25 @@ class StatsTracker():
     
 
 @torch.no_grad()
-def prec_acc_rec(output, target, topk=(1,)):
+def prec_acc_rec(output, target):
     """
-    Computes the accuracy@k for the specified values of k
+    Computes the precision, accuracy and recall of the model. Values are returned in %.
     
     Parameters
     ----------
     output : torch.Tensor [bs* q, 2]
     target : torch.Tensor [bs* q]
+    
+    Returns
+    -------
+    prec : torch.Tensor [1]
+    acc : torch.Tensor [1]
+    rec : torch.Tensor [1]
     """
     assert isinstance(output, torch.Tensor)
     if target.numel() == 0: # Check how many elements in the tensor
         return [torch.zeros([], device=output.device)]
     
-    maxk = max(topk)
-    batch_size = target.size(0)
     output = output.view(-1, 2)
     target = target.view(-1)
     
@@ -135,15 +139,6 @@ def prec_acc_rec(output, target, topk=(1,)):
     prec = prec if not torch.isnan(prec) else torch.zeros_like(prec)
     acc = (true_pos + true_neg) / (true_pos + true_neg + false_pos + false_neg)
     rec = true_pos / (true_pos + false_neg)
-    #print(f"True Pos: {true_pos}, False Pos: {false_pos}, True Neg: {true_neg}, False Neg: {false_neg}", "Accuracy: ", acc, "Precision: ", prec)
 
-    # _, pred = output.topk(maxk, dim = -1, largest=True, sorted=True) # [bs* q, 1]
-    # pred = pred.t() # [1, bs* q]
-    # correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    # res = []
-    # for k in topk:
-    #     correct_k = correct[:k].view(-1).float().sum(0)
-    #     res.append(correct_k.mul_(100.0 / batch_size))
     return prec*100, acc*100, rec*100
 

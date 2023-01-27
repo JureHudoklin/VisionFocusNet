@@ -890,14 +890,14 @@ class SetCriterion(nn.Module):
 
 
 class PostProcessor(nn.Module):
-    def __init__(self, num_select=100, accumulate = False) -> None:
+    def __init__(self, num_select=100, accumulate = False, threshold = 0.5) -> None:
         super().__init__()
         self.num_select = num_select
         self.accumulate = accumulate
+        self.threshold = threshold
 
     @torch.no_grad()
     def forward(self, targets, outputs):
-        # type: (Tensor, Tensor) -> Tensor
         """
         Arguments:
             targets : list of dict -- [{}, ...]
@@ -906,13 +906,14 @@ class PostProcessor(nn.Module):
         Returns:
             results (Tensor)
         """
+        if targets is None:
+            return self.simple_postprocess(outputs)
+        
         img_sizes = [target['orig_size'] for target in targets]
         img_sizes = torch.stack(img_sizes, dim=0)
         out_logits, out_sim_logits, out_bbox = outputs['pred_class_logits'], \
                                                outputs['pred_sim_logits'], \
                                                outputs['pred_boxes']
-        # out_logits = # [B, Q, 2]
-        # pred_sim_logits = # [B, Q, 2]
 
         assert out_logits.shape[0] == img_sizes.shape[0]
         assert img_sizes.shape[1] == 2   
@@ -943,6 +944,26 @@ class PostProcessor(nn.Module):
         results = [{'scores': s.detach(), 'labels': l.detach(), 'boxes': b.detach()} for s, l, b in zip(scores, labels, boxes)]
 
         return results
+    
+    def simple_postprocess(self, outputs):
+        
+        out_logits, out_sim_logits, out_bbox = outputs['pred_class_logits'], \
+                                               outputs['pred_sim_logits'], \
+                                               outputs['pred_boxes'] # B, Q, C
+        
+        out_prob = out_logits.softmax(-1)[..., -1] # B, Q, 1
+        out_sim_prob = out_sim_logits.softmax(-1)[..., -1] # B, Q, 1
+        
+        topk_prob, topk_indexes = torch.topk(out_prob, self.num_select, dim=1) # [B, M]
+        topk_sim_prob = torch.gather(out_sim_prob, 1, topk_indexes) # [B, M]
+        boxes = torch.gather(out_bbox, 1, topk_indexes[:, :, None].repeat(1, 1, 4)) # [B, M, 4]
+        boxes = box_ops.box_cxcywh_to_xyxy(boxes)
+        
+        results = [{'scores': s.detach(), 'sim_scores': sim_s.detach(), 'boxes': b.detach()} for s, sim_s, b in zip(topk_prob, topk_sim_prob, boxes)]
+        
+        return results
+        
+         
 
 def build_model(args, device):
     assert isinstance(args, Config)

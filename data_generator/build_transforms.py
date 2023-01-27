@@ -32,7 +32,7 @@ def make_base_transforms(image_set):
         ])
 
     if image_set == "val":
-        return T.NoTransform()
+        return T.Resize(800, max_size=1333)
 
     raise ValueError(f"unknown {image_set}")
 
@@ -70,19 +70,21 @@ def make_tgt_transforms(image_set,
                     T.NoTransform(),
                 ]),
             )
-        tfs.append(
-                ST.RandomSelectMulti([
-                    ST.LightingNoise(),
-                    T.NoTransform(),
-                ]),
-            )
+        # tfs.append(
+        #         ST.RandomSelectMulti([
+        #             ST.LightingNoise(),
+        #             T.NoTransform(),
+        #         ]),
+        #     )
         
         return T.Compose(tfs)
     
     if image_set == "val":
         tfs = []
-        tfs.append(T.FillBackground("random", (124, 116, 104)))
+        tfs.append(T.Resize(80, max_size=tgt_img_max_size))
+        tfs.append(T.RandomPad((0.3, 0.3)))
         tfs.append(T.Resize(tgt_img_size, max_size=tgt_img_max_size))
+        tfs.append(T.FillBackground("solid_color", (124, 116, 104)))
         return T.Compose(tfs)
 
     raise ValueError(f"unknown {image_set}")

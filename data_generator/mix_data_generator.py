@@ -16,39 +16,74 @@ import copy
 import json
 import numpy as np
 
+from typing import List, Callable
 from pycocotools.coco import COCO
-from multiprocessing import Manager
 
 from data_generator.build_transforms import make_base_transforms, make_tgt_transforms, make_input_transform
-from util.data_utils import Target, CustomBatch, collate_wrapper, set_worker_sharing_strategy
+from util.data_utils import Target, collate_wrapper, set_worker_sharing_strategy
 from torch.utils.data import DataLoader
-from util.misc import nested_tensor_from_tensor_list
 
 
 class MIXLoader():
     def __init__(self, 
-                ann_files, 
-                split,
-                valid_scenes = None,
-                valid_datasets = None,
-                keep_noobj_images = False,
-                inp_transforms = None,
-                base_transforms = None,
-                tgt_transforms = None,
-                num_tgts = 3,
-                max_images_per_dataset = None,
-                min_box_area = 600,
-                sup_val = False,
+                ann_files: List[str], 
+                keep_noobj_images: bool = False,
+                inp_transforms: Callable = None,
+                base_transforms: Callable = None,
+                tgt_transforms: Callable = None,
+                num_tgts: int = 3,
+                max_images_per_dataset: int = None,
+                min_box_area: int = 600,
+                sup_val: bool = False,
                 ) -> None:
-        
-        manager = Manager()
-        
+        """ 
+        A generic data loader for datasets in VFN format.
+        VFN format expects the following directory structure:
+        - root_dir
+            - depth (CURRENTLY NOT USED)
+                - img_1.{ext} 
+                - img_2.{ext}
+            - images
+                - img_1.{ext}
+                - img_2.{ext}
+            - targets
+                - {tgt_class_1}
+                - {tgt_class_2}
+                - ...
+            annotations.json
+            
+        - Annotations.json is a modified version of COCO annotations.
+          It has the following structure (Filename should include the extension):
+        -   {
+                "images": [ {"id": int, "file_name": str, "depth_name": str, "width": int, "height": int}, ... ],
+                "annotations": [{"id": int, "image_id": int, "category_id": int, "bbox": [x,y,w,h], "area": int, "iscrowd": float, "sup_id": int}, ... ],
+                "categories": [{"id": int, "name": str, "supercategory": str, "sup_id": int}, ... ],
+            }
+                
+        Parameters
+        ----------
+        ann_files : List[str]
+            List of paths to annotation files.
+        keep_noobj_images : bool, optional
+            If True, images without any objects in them are also included in the dataset, by default False
+        inp_transforms : Callable[[Image, Target], [Image, Target]], optional
+            Transforms that are are to be applied both to the base and target images, by default None
+        base_transforms : Callable[[Image, Target], [Image, Target]], optional
+            Transforms that are are to be applied only to the base images, by default None
+        tgt_transforms : Callable[[Image, Target], [Image, Target]], optional
+            Transforms that are are to be applied only to the target images, by default None
+        num_tgts : int, optional
+            How many target images to use, by default 5
+        max_images_per_dataset : int, optional
+            Use maximum of this many images from each dataset, by default None
+        min_box_area : int, optional
+            Remove boxes with area less than this, by default 600
+        sup_val : bool, optional
+            If True, supercategory is used as category, by default False
+        """        
         
         self.ann_files = ann_files
         self.root_dirs = [os.path.dirname(ann_file) for ann_file in ann_files]    
-        self.split = split
-        self.valid_scenes = valid_scenes
-        self.valid_datasets = valid_datasets
         self.keep_noobj_images = keep_noobj_images
         self.sup_val = sup_val
         
@@ -376,9 +411,6 @@ def build_MIX_dataset(image_set, ann_files, args):
     
     
     dataset = MIXLoader(ann_files=ann_files,
-                        split=image_set,
-                        valid_scenes= None,
-                        valid_datasets= None,
                         base_transforms = base_transforms,
                         tgt_transforms = tgt_transforms,
                         inp_transforms = inp_transform,

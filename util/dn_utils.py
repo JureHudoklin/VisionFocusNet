@@ -206,21 +206,22 @@ def prepare_for_dino_dn(targets, #  List[Dict[str, Tensor]]
         'know_idx': List [[L, 1], ...]
         'pad_size': int -- N*scalar
     """ 
-    
-    if dn_args is not None:
-        scalar, label_noise_scale, box_noise_scale = dn_args["NUM_DN_GROUPS"], dn_args["LABEL_NOISE_SCALE"], dn_args["BOX_NOISE_SCALE"]
-    else:
-        raise ValueError("dn_args is None") 
-    num_queries = ref_points_unsigmoid.shape[0]
-        
     ref_tgt = ref_tgt.permute(1, 0, 2) # [B, Q, C]
     
-    lab_dino = [torch.cat([t["base_labels"], torch.zeros_like(t["base_labels"])]) for t in targets] #
-    sim_dino = [torch.cat([t["base_sim_labels"], torch.zeros_like(t["base_sim_labels"])]) for t in targets] #
-    matching_dino = [torch.cat([torch.ones_like(t["base_sim_labels"]), torch.zeros_like(t["base_sim_labels"])]) for t in targets]
-    box_dino = [torch.cat([t["base_boxes"], t["base_boxes"]]) for t in targets] #
-  
     if training and dn_args["USE_DN"] and dn_args is not None:
+        if dn_args is not None:
+            scalar, label_noise_scale, box_noise_scale = dn_args["NUM_DN_GROUPS"], dn_args["LABEL_NOISE_SCALE"], dn_args["BOX_NOISE_SCALE"]
+        else:
+            raise ValueError("dn_args is None") 
+        num_queries = ref_points_unsigmoid.shape[0]
+            
+        
+        lab_dino = [torch.cat([t["base_labels"], torch.zeros_like(t["base_labels"])]) for t in targets] #
+        sim_dino = [torch.cat([t["base_sim_labels"], torch.zeros_like(t["base_sim_labels"])]) for t in targets] #
+        matching_dino = [torch.cat([torch.ones_like(t["base_sim_labels"]), torch.zeros_like(t["base_sim_labels"])]) for t in targets]
+        box_dino = [torch.cat([t["base_boxes"], t["base_boxes"]]) for t in targets] #
+            
+        
         known = [(torch.ones_like(t)) for t in lab_dino] #[[L], ...]
         know_idx = [torch.nonzero(t) for t in known] #[[L, 1], ...]
         known_num = [sum(k) for k in known] #[L, ...] # Number of known labels in each image of batch

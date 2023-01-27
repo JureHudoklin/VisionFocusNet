@@ -6,23 +6,23 @@ import time
 import os
 import argparse
 import json
+import PIL
 
 import torch.nn as nn
 import torchvision
 import matplotlib.pyplot as plt
 import torch.multiprocessing
-from pycocotools.coco import COCO
 torch.multiprocessing.set_sharing_strategy('file_system')
 from torchsummary import summary
 from glob import glob
 from functools import partial
-from torch.utils.tensorboard import SummaryWriter
+from pathlib import Path
 
-from engine import train_one_epoch, evaluate
-from util.network_utils import load_model, partial_load_model, save_model, write_summary
+
+from data_generator.preprocessor import SimplePreprocessor
+from util.network_utils import load_model, save_model
 from configs.vision_focusnet_config import Config
 from models.vision_focus_net import build_model
-from data_generator.coco import get_coco_data_generator, build_dataset, get_coco_api_from_dataset
 
 
 
@@ -55,12 +55,14 @@ def main(args):
     if args.load_dir is not None:
         cfg = Config(load_path=args.load_dir, save_path=save_dir)
     else:
+        print("WARNING: No load directory provided. Using random weights and config.")
         cfg = Config(save_path=save_dir)
         start_epoch = None
     
 
     ######### BUILD MODEL #########
     model, criterion, postprocessor = build_model(cfg, device)
+    preprocessor = SimplePreprocessor(device)
     model.to(device)
     model.eval()
     
@@ -73,94 +75,100 @@ def main(args):
     ######### LOAD MODEL IF PROVIDED #########
     last_epoch = -1
     start_epoch = 0
+    step = 0
     if args.load_dir is not None:
-        try:
-            model, optimizer, start_epoch = load_model(model, optimizer, args.load_dir, device, epoch=None)
-            if start_epoch is None:
-                start_epoch = 0
-            else:
-                last_epoch = start_epoch
-                start_epoch += 1
-        except:
-            print("WARNING: Could not load full model dict. Loading only matching weights")
-            model, optimizer, start_epoch = partial_load_model(model, optimizer, args.load_dir, device, epoch=None)
+        model, optimizer, start_epoch, step = load_model(None, model, optimizer, args.load_dir, device)
+        if start_epoch is None:
+            start_epoch = 0
+        else:
+            last_epoch = start_epoch
             start_epoch += 1
         print(f"Loaded model from {args.load_dir} at epoch {start_epoch}")
         
-  
-    # Set Logging
-    writer = SummaryWriter(log_dir=log_save_dir)
+    #######################################################################################################
+    #######################################################################################################
+    #######################################################################################################
+    #######################################################################################################
 
-
-    ######### GET DATASET #########
+    ######### GET DATA AND CALCULATE OUTPUTS #########
+    threshold = 0.5
     if args.data_dir is None:
-        # COCO
-        train_data_loader, test_data_loader = get_coco_data_generator(cfg)
-    else:
-        img_dir = os.path.join(args.data_dir, "images")
-        tgt_dir = os.path.join(args.data_dir, "targets")
-        ann_gt_path = os.path.join(args.data_dir, "annotations.json")
-        if ann_gt_path is not None:
-            ann_gt = json.load(open(ann_gt_path, "r"))
-        else:
-            ann_gt = None
+        raise ValueError("Data directory not provided")
+    data_dir = Path(args.data_dir)
     
-    # Get COCO GT for evaluation
-    # val_base_dirs =cfg.TEST_DATASETS
-    # coco_ds = []
-    # for val_base_dir in val_base_dirs:
-    #     coco_ds.append(COCO(val_base_dir))    
+    img_dir_path = data_dir / "images"
+    target_dir_path = data_dir / "targets"
     
-    #########################################################
-    ##############    TRAINING / EVALUATION   ###############
-    #########################################################
-    # evaluate_partial = partial(evaluate,
-    #                            model=model,
-    #                            criterion=criterion,
-    #                            postprocessor=postprocessor,
-    #                            data_loaders = test_data_loaders,
-    #                            coco_ds = coco_ds,
-    #                            writer=writer,
-    #                            save_dir=save_dir,
-    #                            cfg=cfg,)
+    img_paths = glob(str(img_dir_path / "*"))
+    target_cats = glob(str(target_dir_path / "*"))
     
-    print("Starting Testing")
-    training_start_time = time.time()
-    for epoch in range(start_epoch, cfg.EPOCHS):
-        epoch_start_time = time.time()
-        print(f"Epoch: {epoch}, Start Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(epoch_start_time))}")
-        
-        ############### Train ###############
-        stats = train_one_epoch(model=model,
-                                criterion=criterion,
-                                data_loader=train_data_loader,
-                                optimizer = optimizer,
-                                epoch= epoch,
-                                writer = writer,
-                                save_dir= save_dir,
-                                cfg = cfg,
-                                evaluate_fn = evaluate_partial)
-        write_summary(writer, stats[0], epoch, "train_loss")
-        write_summary(writer, stats[1], epoch, "train_stats")
-        
-        save_model(model, optimizer, epoch, save_dir)
-        
-        lr_scheduler.step()
-        print(f"Epoch: {epoch}, Elapsed Time: {time.time() - epoch_start_time}")
-        
-        ################ Eval ###############
-        # stats, coco_stats = evaluate(model, criterion, postprocessor, test_data_loaders, coco_ds, epoch, writer, save_dir, cfg)
-        # exit()
-        # write_summary(writer, stats[0], epoch, "val_loss")
-        # write_summary(writer, stats[1], epoch, "val_stats")
-        # write_summary(writer, coco_stats, epoch, "val")
+    annotations = {}
+    for img_path in img_paths:
+        for tgt_cat_path in target_cats:
+            img_path = Path(img_path)
+            tgt_cat_path = Path(tgt_cat_path)
+            img_name = img_path.name
+            
+            tgt_cat = tgt_cat_path.name
+            
+            print(f"Testing on {img_name} with {tgt_cat}")
+            
+            # Load Image
+            img = PIL.Image.open(img_path)
+            
+            # Load Targets
+            targets = glob(str(tgt_cat_path / "*"))
+            assert len(targets) > 0, "No targets found"
+            targets = random.sample(targets, cfg.NUM_TGTS) if len(targets) > cfg.NUM_TGTS else targets
+            targets = [PIL.Image.open(tgt) for tgt in targets]
+            
+            # Preprocess Data
+            samples, tgt_imgs = preprocessor(img, targets)
+            
+            # Forward Pass
+            output = model(samples, tgt_imgs)
+            outputs_formated = postprocessor(None, output)[0]
+            
+            # Filter Outputs
+            scores, sim_scores, boxes = outputs_formated["scores"], outputs_formated["sim_scores"], outputs_formated["boxes"]
+            scores = scores.reshape(-1)
+            sim_scores = sim_scores.reshape(-1)
+            boxes = boxes.reshape(-1, 4)
+            
+            # Keep only boxes with score > threshold or sim_score > threshold
+            keep = (scores > threshold) | (sim_scores > threshold)
+            scores, sim_scores, boxes = scores[keep], sim_scores[keep], boxes[keep]
+
+            # Save Output
+            if img_name not in annotations:
+                annotations[img_name] = {}
+            annotations[img_name].update({tgt_cat: {"scores": scores, "sim_scores": sim_scores, "boxes": boxes}})
+            
+            # Plot Output
+            w, h = img.width, img.height
+            fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+            ax[0].imshow(img)
+            # Plot Boxes
+            for i, box in enumerate(boxes): # x, y, x, y
+                box = box.detach().cpu().numpy()
+                box = box * np.array([w, h, w, h])
+                box = box.astype(np.int)
+                print(scores[i], sim_scores[i])
+                color = "r" if scores[i].detach().cpu().numpy() > threshold else "b"
+                print(color)
+                ax[0].add_patch(plt.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=1, edgecolor=color, facecolor='none'))
+            
+            ax[1].imshow(targets[0])
+            
+            plt.savefig(os.path.join(save_dir, f"{img_name}_{tgt_cat}.png"))
+            
                 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('DAB-DETR', add_help=False)
     # Get Arguments
     parser.add_argument("--load_dir", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default=None)
-    parser.add_argument("--data_dir", type=str, default=None)
+    parser.add_argument("--data_dir", type=str, default=None, required=True)
     args = parser.parse_args()
     
     if args.load_dir is not None:
