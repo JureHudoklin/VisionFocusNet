@@ -1,6 +1,7 @@
 from turtle import reset
 import torch
 import torch.nn as nn
+from torch.utils import checkpoint
 from torchsummary import summary
 from torch.profiler import profile, record_function, ProfilerActivity
 
@@ -60,12 +61,14 @@ class DinoVits16(nn.Module):
     def __init__(self,
                  trainable=False,
                  pretrained=True,
+                 use_checkpointing=False,
                  *args,
                  **kwargs) -> None:
         super(DinoVits16, self).__init__(*args, **kwargs)
     
         self.out_channels = 384
-        self.vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16', pretrained=pretrained)
+        self.use_checkpointing = use_checkpointing
+        self.vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16', pretrained=pretrained)        
         if trainable:
             for param in self.vits16.parameters():
                 param.requires_grad = True
@@ -90,7 +93,12 @@ class DinoVits16(nn.Module):
         """
         assert isinstance(x, NestedTensor)
         inp, _ = x.decompose()
-        temp_feat = self.vits16(inp)
+        if self.use_checkpointing:
+            inp.requires_grad_(True)
+            temp_feat: torch.Tensor = checkpoint.checkpoint(self.vits16, inp)
+        else:
+            temp_feat: torch.Tensor = self.vits16(inp)
+            
         out = NestedTensor(temp_feat, None)
         return out
     
@@ -110,13 +118,6 @@ class BackboneBase(nn.Module):
     def forward(self, tensor_list: NestedTensor):
         xs = self.template_encoder(tensor_list.tensors)
         out = NestedTensor(xs, None)
-        return out
-        out: Dict[str, NestedTensor] = {}
-        for name, x in xs.items():
-            m = tensor_list.mask
-            assert m is not None
-            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
-            out[name] = NestedTensor(x, mask)
         return out
 
 
@@ -139,62 +140,16 @@ class TemplateEncoder_ResNet(BackboneBase):
     
 def build_template_encoder(cfg):
     args = cfg.TEMPLATE_ENCODER
-    if args["LR"] > 0:
+    if args["lr"] > 0:
         trainable = True
     else:
         trainable = False
-    model = DinoVits16(trainable=trainable, pretrained=args["PRETRAINED"])
+    name = args["name"]
     
+    if name == "vits16":
+        model = DinoVits16(trainable=trainable, pretrained=args["pretrained"], use_checkpointing=args["use_checkpointing"])
+    elif name == "resnet50":
+        model = TemplateEncoder_ResNet("resnet50", trainable, False, False, pretrained=args["pretrained"])
+    else:
+        raise ValueError(f"Template Encoder -- {name} -- is not supported.")
     return model
-
-def build_resnet_template_encoder(cfg):
-    """
-    Build the resnet backbone.
-
-    Parameters
-    ----------
-    args : Config()
-        - LR_BACKBONE : float
-        - RETURN_INTERM_LAYERS : bool
-        - BACKBONE : str in ["resnet18", "resnet34", "resnet50", "resnet101"]
-        - DILATION : bool
-
-    Returns
-    -------
-    model : nn.Module
-        resnet backbone with frozen BatchNorm.
-    """
-    # train_backbone = args.LR_BACKBONE > 0
-    # return_interm_layers = args.RETURN_INTERM_LAYERS
-    template_encoder = TemplateEncoder_ResNet("resnet50", True, False, False)
-    return template_encoder
-    
-if __name__ == "__main__":
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    
-    
-    resnet = build_resnet_template_encoder(None)
-    resnet.to(device)
-    out = resnet(torch.rand(1, 3, 224, 224).to(device))
-    print(out.tensors.shape)
-    
-    
-    
-    
-    
-    vits16 = torch.hub.load('facebookresearch/dino:main', 'dino_vits16').cuda()
-    inputs = torch.randn(10, 3, 356, 356).cuda()
-    #out = vits16(torch.randn(10, 3, 224, 224).to(device))
-    
-    
-    with profile(with_stack=True, profile_memory=True) as prof:
-        out = vits16(inputs)
- 
-    #print(prof.key_averages(group_by_stack_n=5).table(sort_by='cuda_memory_usage', row_limit=50))
-
-    print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=20))
-            
-    #         print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
-    
-    # print(out.shape)
-    # #summary(vits16, (3, 32, 32))

@@ -1,7 +1,9 @@
 import torch
 import os
+import math
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import ImageGrid
 
 from data_generator.transforms import DeNormalize
 from util.box_ops import box_cxcywh_to_xyxy
@@ -13,41 +15,65 @@ def write_summary(writer, stats_dict, epoch, split):
     for k, v in stats_dict.items():
         writer.add_scalar(f"{split}/{k}", v, epoch)
     
-def save_model(model, optimizer, epoch, save_dir, name = None):
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-        print(f"Created directory: {save_dir}")
-    if name is None:
-        name = epoch
+def save_model(model, optimizer, epoch, step, save_dir, name = ""):
+    weights_dir = os.path.join(save_dir, "weights")
+    if not os.path.exists(weights_dir):
+        os.makedirs(weights_dir)
+        print(f"Created directory: {weights_dir}")
     torch.save({
         "epoch": epoch,
+        "step": step,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-    }, os.path.join(save_dir, f"epoch_{name}.pth"))
+    }, os.path.join(weights_dir, f"e{epoch}_s{step}_{name}.pth"))
 
-def load_model(model, optimizer, load_dir, device, epoch=None):
-    if epoch is None:
-        epoch = max([int(f.split("_")[1].split(".")[0]) for f in os.listdir(load_dir) if f.endswith(".pth")])
-    checkpoint = torch.load(os.path.join(load_dir, f"epoch_{epoch}.pth"), map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    epoch = checkpoint["epoch"]
-    return model, optimizer, epoch
-
-
+def load_model(file_name, model, optimizer, load_dir, device):
+    weights_dir = os.path.join(load_dir, "weights")
+    if file_name is None:
+        print("No file name provided, loading latest model")
+        files = [f.strip(".pth") for f in os.listdir(weights_dir) if f.endswith(".pth")]
+        files = sorted(files, key=lambda x: int(x.split("_")[0][1:]))
+    
+        # Prompts user to select a file if there are multiple
+        if len(files) > 1:
+            print("Multiple files found, please select one:")
+            for i, f in enumerate(files):
+                print(f"{i}: {f}")
+            file_name = files[int(input("File: "))]
+        else:
+            file_name = files[0]
+        
+    print(f"Loading model: {file_name}")
+    checkpoint = torch.load(os.path.join(weights_dir, f"{file_name}.pth"), map_location=device)
+    try:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    except:
+        missing_keys, unexpected_keys = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+        print(f"Missing keys: {missing_keys}", f"Unexpected keys: {unexpected_keys}", sep = "\n")
+        print("Loading model without optimizer")
+        
+    epoch = checkpoint.get("epoch", 0)
+    step = checkpoint.get("step", 0)
+    return model, optimizer, epoch, step
 
 @torch.no_grad()
 def display_model_outputs(outputs, samples, tgt_imgs, targets):
-    bs = len(targets)
+    bs = samples.tensors.shape[0]
+    tgt_imgs, _ = tgt_imgs.decompose()
+    N_t = tgt_imgs.shape[0]//bs
     denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     denorm2 = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     
-    fig, axs = plt.subplots(bs, 2, figsize=(6, 2*bs), dpi = 500)
+    fig, axs = plt.subplots(bs, 1+1, figsize=(3, 1.5*bs), dpi = 500)
+    if bs == 1:
+        axs = axs.reshape(1, 1+1) 
+        
+    tgt_imgs = tgt_imgs.reshape(bs, N_t, 3, tgt_imgs.shape[-2], tgt_imgs.shape[-1])
+
     for b in range(bs):
         img = denorm(samples.tensors[b])
         img = img.permute(1, 2, 0).cpu().numpy()
-        tgt_img = denorm2(tgt_imgs.tensors[b].contiguous())
-        tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
         
         ax = axs[b, 0]
         ax.imshow(img)
@@ -60,35 +86,51 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
             assert isinstance(box, torch.Tensor)
             cx, cy, w, h = box.cpu().numpy()
             x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor="green", linewidth=1))
-            obj_sim = targets[b]["sim_labels"][i].item()
-            ax.text(x, y, f"SIM:{obj_sim}", color="green", fontsize=4)
+            obj_lbl = targets[b]["labels"][i].item()
+            sim_lbl = targets[b]["sim_labels"][i].item()
+            if obj_lbl == 1:
+                color = "darkgreen"
+            else:
+                color = "blue"
+                
+            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=color, linewidth=0.5))
+            #ax.text(x, y+h*img_h, f"SIM:{obj_sim}", color=color, fontsize=4)
         
         # Plot Predicted Boxes
-        top_k = 5
-        class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
-        sim_logits = outputs["pred_sim_logits"][b].sigmoid() # [Q, 1]
-        
-        class_val, class_idx = class_logits[:, 1].topk(top_k) # [N]
-        sim_val = sim_logits[class_idx]  # [N]
-        for i in range(top_k):
-            id = class_idx[i].item() # Idx of the prediction
-            c_vl = class_val[i].item() # Class score
-            s_vl = sim_val[i].item() # Sim score
-            obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
-            if obj_bg == 0:
-                edgecolor = "black"
-                alpha = 0.3
-            else:
-                edgecolor = "red"
-                alpha = 1
-
-            cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
-
-            x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
-            ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=1, alpha = alpha))
-            ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=4, alpha = alpha)
+        if "pred_class_logits" in outputs and "pred_sim_logits" in outputs and "pred_boxes" in outputs:
+            top_k = 10
+            class_logits = outputs["pred_class_logits"][b].softmax(-1) # [Q, 2]
+            sim_logits = outputs["pred_sim_logits"][b].softmax(-1)  # [Q, 2]
             
+            class_val, class_idx = class_logits[:, 1].topk(top_k) # [N]
+            sim_val, sim_idx = sim_logits[:, 1].topk(top_k) # [N]
+
+            for i in range(top_k):
+                id = class_idx[i].item() # Idx of the prediction
+                c_vl = class_val[i].item() # Class score
+                s_vl = sim_val[i].item() # Sim score
+                obj_bg = class_logits[id].argmax().item() # 0: BG, 1: OBJ
+                if c_vl > 0.5:
+                    alpha = 1
+                    edgecolor = "red"
+                elif s_vl > 0.5:
+                    alpha = 1
+                    edgecolor = "orange"
+                else:
+                    edgecolor = "black"
+                    alpha = 0.2
+
+                cx, cy, w, h = outputs["pred_boxes"][b][id].cpu().detach().numpy()
+
+                x, y, w_a, h_a = (cx - w/2)*img_w, (cy - h/2)*img_h, w*img_w, h*img_h
+                ax.add_patch(plt.Rectangle((x, y), w_a, h_a, fill=False, edgecolor=edgecolor, linewidth=0.2, alpha = alpha))
+                ax.text(x, y, f"OBJ:{c_vl:.2f}, SIM:{s_vl:.2f}", color=edgecolor, fontsize=2, alpha = alpha)
+                
+            
+        ### Plot Target Objects ###
+        #for j in range(N_t):
+        tgt_img = denorm2(tgt_imgs[b, 0].contiguous())
+        tgt_img = tgt_img.permute(1, 2, 0).cpu().numpy()
         ax = axs[b, 1]
         ax.imshow(tgt_img)
         ax.axis("off")
@@ -97,71 +139,39 @@ def display_model_outputs(outputs, samples, tgt_imgs, targets):
     return fig    
     
 @torch.no_grad()
-def log_model_images(outputs, samples, tgt_imgs, targets):
-    # Put everything to CPU
-    keys = ["pred_boxes", "pred_class_logits", "pred_sim_logits"]
-    outputs = {k: v.cpu().detach() for k, v in outputs.items() if k in keys}
-    samples = samples.to("cpu")
-    tgt_imgs = tgt_imgs.to("cpu")
-    targets = [{k: v.cpu() for k, v in t.items()} for t in targets]
+def display_heat_maps(hm, hm_gt, samples):
+    # Convert HM to RGB
+    hm = hm.repeat(1, 3, 1, 1) # b, 3, h, w
+    hm = hm*torch.tensor([250, 0, 0]).view(1, 3, 1, 1).to(hm.device)
     
-    
-    bs = len(targets)
-    denorm = DeNormalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    imgs, imgs_mask = samples.decompose()
-    tgt_imgs, tgt_imgs_mask = tgt_imgs.decompose()
-    nh, nw = imgs.shape[-2:]
-    tnh, tnw = tgt_imgs.shape[-2:]
+    # Prepare GT HM
+    hm_gt = hm_gt.repeat(1, 3, 1, 1) # b, 3, h, w
+    hm_gt = hm_gt*torch.tensor([0, 0, 150]).view(1, 3, 1, 1).to(hm_gt.device)
 
-    # Prepare the output
-    out_img = torch.zeros((bs, 2, 3, nh, nw), dtype=torch.uint8)
+    # Combine HM and GT HM
+    hm_sum = hm + hm_gt
     
-    for b in range(bs):
-        h, w = targets[b]["size"]
-        img = denorm(imgs[b])
-        tgt_tmg = denorm(tgt_imgs[b])
-        
-        # Convert img to uint8
-        img = (img*255).type(torch.uint8)
-        tgt_tmg = (tgt_tmg*255).type(torch.uint8)
-        
-        # Predictions
-        boxes = outputs["pred_boxes"][b] # [Q, 4] cx, cy, w, h normalized
-        boxes_xyxy = box_cxcywh_to_xyxy(boxes) # [Q, 4] x1, y1, x2, y2 normalized
-        boxes_xyxy = boxes_xyxy * torch.tensor([w, h, w, h], dtype=torch.uint8, device=boxes_xyxy.device) # [Q, 4] x1, y1, x2, y2
-        labels = outputs["pred_class_logits"][b].softmax(-1).argmax(-1) # [Q]
-        sim_labels = outputs["pred_sim_logits"][b].sigmoid() # [Q]
-        
-        top_k = 5
-        val, idx = labels.topk(top_k)
-        boxes_xyxy = boxes_xyxy[idx]
-        labels = labels[idx]
-        sim_labels = sim_labels[idx]
-        box_caption = [f"OBJ:{labels[i].item():.2f}, SIM:{sim_labels[i].item():.2f}" for i in range(len(labels))]
-        colors = [(int(255*v), 0, 0) for v in labels.tolist()]
-        img = draw_bounding_boxes(img, boxes_xyxy, box_caption, width=5, font = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf", font_size=20, colors = colors)
-        
-        # GTs
-        boxes_gt = targets[b]["boxes"] # [N, 4]
-        boxes_gt_xyxy = box_cxcywh_to_xyxy(boxes_gt) # [N, 4]
-        boxes_gt_xyxy = boxes_gt_xyxy * torch.tensor([w, h, w, h], dtype=torch.float32, device=boxes_gt_xyxy.device) # [N, 4]
-        labels_gt = targets[b]["labels"] # [N]
-        sim_labels_gt = targets[b]["sim_labels"]# [N]
-        box_caption_gt = [f"OBJ:{labels_gt[i]}, SIM:{sim_labels_gt[i]}" for i in range(len(labels_gt))]
-        
-        img = draw_bounding_boxes(img, boxes_gt_xyxy, box_caption_gt, width=5, font_size=20, font = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf", colors = "green")
-        out_img[b, 0] = img
-        
-        # Target image
-        if nh/nw > tnh/tnw:
-            max_size = nw
-            tgt_size = nh
-        else:
-            max_size = nh
-            tgt_size = nw
-        tgt_tmg = Resize(tgt_size, max_size=max_size)(tgt_tmg)
-        out_img[b, 1, :, :tgt_tmg.shape[-2], :tgt_tmg.shape[-1]] = tgt_tmg
-        
-    bs, _, _, h, w = out_img.shape
-    out_img = out_img.permute(0, 2, 1, 3, 4).reshape(bs, 3, 2*h, w)
-    return out_img
+    # Add hm to samples
+    scene_img = samples.clone() # b, 3, h, w
+    scene_img[:, :3, :, :] = scene_img[:, :3, :, :]*0.5 + hm_sum*0.5
+    
+    # Plot Grid of Images
+    bs = len(samples)
+    grid_size = math.ceil(math.sqrt(bs))
+    fig = plt.figure(figsize=(5, 5), dpi = 500)
+    grid = ImageGrid(fig, 111, # similar to subplot(111)
+                     nrows_ncols=(grid_size, grid_size), # creates 2x2 grid of axes
+                     axes_pad=0.05,  # pad between axes in inch.
+                     )
+    
+    for i in range(bs):
+        ax = grid[i]
+        ax.imshow(scene_img[i].permute(1, 2, 0).cpu().numpy())
+        ax.axis("off")
+
+    # Set padding between subplots
+    plt.subplots_adjust(wspace=1, hspace=1)
+    
+    return fig
+
+    

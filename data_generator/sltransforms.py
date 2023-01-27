@@ -58,6 +58,14 @@ class LightingNoise:
     def __call__(self, img, target):
         return lighting_noise(img), target
 
+class RandomBlackAndWhite(object):
+    def __init__(self, prob = 0.5) -> None:
+        self.prob = prob
+
+    def __call__(self, img, target):
+        if random.random() < self.prob:
+            img = F.to_grayscale(img, num_output_channels=3)
+        return img, target
 
 class RandomSelectMulti(object):
     """

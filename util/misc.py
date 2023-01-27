@@ -1,21 +1,18 @@
 
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 """
-Misc functions, including distributed helpers.
-Mostly copy-paste from torchvision references.
+Misc functions.
+Some functions are copy-paste from torchvision references.
 """
 
+import os
+import time
 from collections import defaultdict, deque
-
-from typing import Optional, List
+from typing import List, Optional
 
 import torch
+import torchvision
 from torch import Tensor, nn
 from torchvision.ops import box_convert
-
-
-# needed due to empty tensor bug in pytorch and torchvision 0.5
-import torchvision
 
 
 class NestedTensor(object):
@@ -43,6 +40,12 @@ class NestedTensor(object):
         else:
             cast_mask = None
         return NestedTensor(cast_tensor, cast_mask)
+    
+    def pin_memory(self):
+        self.tensors = self.tensors.pin_memory()
+        if self.mask is not None:
+            self.mask = self.mask.pin_memory()
+        return self
 
     def decompose(self):
         return self.tensors, self.mask
@@ -53,6 +56,10 @@ class NestedTensor(object):
     @property
     def device(self):
         return self.tensors.device
+    
+    @property
+    def shape(self):
+        return self.tensors.shape
 
 
 def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
@@ -117,8 +124,18 @@ def _max_by_axis(the_list):
             maxes[index] = max(maxes[index], item)
     return maxes
 
+def get_ETA(start_time, current_iter, total_iter):
+    ETA = (time.time() - start_time) * (total_iter-current_iter) / current_iter
+    ETA_str = f"{int(ETA//3600)}h {int(ETA%3600//60):02d}m {int(ETA%60):02d}s"   
 
+    return ETA, ETA_str
 
+def create_directory_structure(path):
+    directories = ["logs", "weights", "images"]
+    for directory in directories:
+        if not os.path.exists(os.path.join(path, directory)):
+            os.makedirs(os.path.join(path, directory))
+            
 
 
 
