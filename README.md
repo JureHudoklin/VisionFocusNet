@@ -87,6 +87,14 @@ Next run the testing:
 python test_detr.py --load_dir <path_to_load_dir> --save_dir <path_to_save_dir> --data_dir <path_to_data_dir>
 ```
 
+## Citation
+If you use this code for your research, please cite my thesis:
 
+** Suction Grasp Generation and Template-Based object detection **
+
+Some parts of the code are based on the following repositories:
+- [DETR](https://github.com/facebookresearch/detr)
+- [Deformable DETR](https://github.com/fundamentalvision/Deformable-DETR)
+- [DINO-DETR](https://github.com/IDEA-Research/DINO)
 
 
